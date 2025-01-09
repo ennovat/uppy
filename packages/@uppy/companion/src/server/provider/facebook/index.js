@@ -1,111 +1,100 @@
-const request = require('request')
-const purest = require('purest')({ request })
-const { promisify } = require('util')
+const crypto = require('node:crypto');
 
 const Provider = require('../Provider')
 const { getURLMeta } = require('../../helpers/request')
 const logger = require('../../logger')
-const adapter = require('./adapter')
-const { ProviderApiError, ProviderAuthError } = require('../error')
-const { requestStream } = require('../../helpers/utils')
+const { adaptData, sortImages } = require('./adapter')
+const { withProviderErrorHandling } = require('../providerErrors')
+const { prepareStream } = require('../../helpers/utils')
+const { HttpError } = require('../../helpers/utils')
+
+const got = require('../../got')
+
+
+async function runRequestBatch({ secret, token, requests }) {
+  // https://developers.facebook.com/docs/facebook-login/security/#appsecret
+  // couldn't get `appsecret_time` working, but it seems to be working without it
+  // const time = Math.floor(Date.now() / 1000)
+  const appSecretProof = crypto.createHmac('sha256', secret)
+    // .update(`${token}|${time}`)
+    .update(token)
+    .digest('hex');
+
+  const form = {
+    access_token: token,
+    appsecret_proof: appSecretProof,
+    // appsecret_time: String(time),
+    batch: JSON.stringify(requests),
+  }
+
+  const responsesRaw = await (await got).post('https://graph.facebook.com', { form }).json()
+
+  const responses = responsesRaw.map((response) => ({ ...response, body: JSON.parse(response.body) }))
+
+  const errorResponse = responses.find((response) => response.code !== 200)
+  if (errorResponse) {
+    throw new HttpError({ statusCode: errorResponse.code, responseJson: errorResponse.body })
+  }
+
+  return responses
+}
+
+async function getMediaUrl ({ secret, token, id }) {
+  const [{ body }] = await runRequestBatch({
+    secret,
+    token,
+    requests: [
+      { method: 'GET', relative_url: `${id}?${new URLSearchParams({ fields: 'images' }).toString()}` },
+    ],
+  });
+
+  const sortedImages = sortImages(body.images)
+  return sortedImages[sortedImages.length - 1].source
+}  
+
 
 /**
  * Adapter for API https://developers.facebook.com/docs/graph-api/using-graph-api/
  */
 class Facebook extends Provider {
-  constructor (options) {
-    super(options)
-    this.authProvider = Facebook.authProvider
-    this.client = purest({
-      ...options,
-      provider: Facebook.authProvider,
-    })
-  }
-
-  static get authProvider () {
+  static get oauthProvider () {
     return 'facebook'
   }
 
-  _list ({ directory, token, query = { cursor: null } }, done) {
-    const qs = {
-      fields: 'name,cover_photo,created_time,type',
-    }
+  async list ({ directory, token, query = { cursor: null } }) {
+    return this.#withErrorHandling('provider.facebook.list.error', async () => {
+      const qs = { fields: 'name,cover_photo,created_time,type' }
 
-    if (query.cursor) {
-      qs.after = query.cursor
-    }
+      if (query.cursor) qs.after = query.cursor
 
-    let path = 'me/albums'
-    if (directory) {
-      path = `${directory}/photos`
-      qs.fields = 'icon,images,name,width,height,created_time'
-    }
+      let path = 'me/albums'
+      if (directory) {
+        path = `${directory}/photos`
+        qs.fields = 'icon,images,name,width,height,created_time'
+      }
 
-    this.client
-      .get(`https://graph.facebook.com/${path}`)
-      .qs(qs)
-      .auth(token)
-      .request((err, resp, body) => {
-        if (err || resp.statusCode !== 200) {
-          err = this._error(err, resp)
-          logger.error(err, 'provider.facebook.list.error')
-          return done(err)
-        }
-        this._getUsername(token, (err, username) => {
-          if (err) {
-            done(err)
-          } else {
-            done(null, this.adaptData(body, username, directory, query))
-          }
-        })
-      })
-  }
+      const [response1, response2] = await runRequestBatch({
+        secret: this.secret,
+        token,
+        requests: [
+          { method: 'GET', relative_url: `me?${new URLSearchParams({ fields: 'email' }).toString()}` },
+          { method: 'GET', relative_url: `${path}?${new URLSearchParams(qs)}` },
+        ],
+      });
 
-  _getUsername (token, done) {
-    this.client
-      .get('me')
-      .qs({ fields: 'email' })
-      .auth(token)
-      .request((err, resp, body) => {
-        if (err || resp.statusCode !== 200) {
-          err = this._error(err, resp)
-          logger.error(err, 'provider.facebook.user.error')
-          return done(err)
-        }
-        done(null, body.email)
-      })
-  }
-
-  _getMediaUrl (body) {
-    const sortedImages = adapter.sortImages(body.images)
-    return sortedImages[sortedImages.length - 1].source
+      const { email } = response1.body
+      const list = response2.body
+      return adaptData(list, email, directory, query)
+    })
   }
 
   async download ({ id, token }) {
-    try {
-      const body1 = await new Promise((resolve, reject) => (
-        this.client
-          .get(`https://graph.facebook.com/${id}`)
-          .qs({ fields: 'images' })
-          .auth(token)
-          .request((err, resp, body) => {
-            if (err || resp.statusCode !== 200) {
-              err = this._error(err, resp)
-              logger.error(err, 'provider.facebook.download.error')
-              reject(err)
-              return
-            }
-            resolve(body)
-          })
-      ))
-
-      const url = this._getMediaUrl(body1)
-      const req = request(url)
-      return await requestStream(req, async (res) => this._error(null, res))
-    } catch (err) {
-      logger.error(err, 'provider.facebook.download.url.error')
-      throw err
-    }
+    return this.#withErrorHandling('provider.facebook.download.error', async () => {
+      const url = await getMediaUrl({ secret: this.secret, token, id })
+      const stream = (await got).stream.get(url, { responseType: 'json' })
+      await prepareStream(stream)
+      return { stream }
+    })
   }
 
   // eslint-disable-next-line class-methods-use-this
@@ -115,82 +104,38 @@ class Facebook extends Provider {
     throw new Error('call to thumbnail is not implemented')
   }
 
-  _size ({ id, token }, done) {
-    return this.client
-      .get(`https://graph.facebook.com/${id}`)
-      .qs({ fields: 'images' })
-      .auth(token)
-      .request((err, resp, body) => {
-        if (err || resp.statusCode !== 200) {
-          err = this._error(err, resp)
-          logger.error(err, 'provider.facebook.size.error')
-          return done(err)
-        }
-
-        getURLMeta(this._getMediaUrl(body))
-          .then(({ size }) => done(null, size))
-          .catch((err2) => {
-            logger.error(err2, 'provider.facebook.size.error')
-            done(err2)
-          })
-      })
-  }
-
-  _logout ({ token }, done) {
-    return this.client
-      .delete('me/permissions')
-      .auth(token)
-      .request((err, resp) => {
-        if (err || resp.statusCode !== 200) {
-          logger.error(err, 'provider.facebook.logout.error')
-          done(this._error(err, resp))
-          return
-        }
-        done(null, { revoked: true })
-      })
-  }
-
-  adaptData (res, username, directory, currentQuery) {
-    const data = { username, items: [] }
-    const items = adapter.getItemSubList(res)
-    items.forEach((item) => {
-      data.items.push({
-        isFolder: adapter.isFolder(item),
-        icon: adapter.getItemIcon(item),
-        name: adapter.getItemName(item),
-        mimeType: adapter.getMimeType(item),
-        size: null,
-        id: adapter.getItemId(item),
-        thumbnail: adapter.getItemThumbnailUrl(item),
-        requestPath: adapter.getItemRequestPath(item),
-        modifiedDate: adapter.getItemModifiedDate(item),
-      })
+  async size ({ id, token }) {
+    return this.#withErrorHandling('provider.facebook.size.error', async () => {
+      const url = await getMediaUrl({ secret: this.secret, token, id })
+      const { size } = await getURLMeta(url)
+      return size
     })
-
-    data.nextPagePath = adapter.getNextPagePath(res, currentQuery, directory)
-    return data
   }
 
-  _error (err, resp) {
-    if (resp) {
-      if (resp.body && resp.body.error.code === 190) {
-        // Invalid OAuth 2.0 Access Token
-        return new ProviderAuthError()
-      }
+  async logout ({ token }) {
+    return this.#withErrorHandling('provider.facebook.logout.error', async () => {
+      await runRequestBatch({
+        secret: this.secret,
+        token,
+        requests: [
+          { method: 'DELETE', relative_url: 'me/permissions' },
+        ],
+      });
+  
+      return { revoked: true }
+    })
+  }
 
-      const fallbackMessage = `request to ${this.authProvider} returned ${resp.statusCode}`
-      const msg = resp.body && resp.body.error ? resp.body.error.message : fallbackMessage
-      return new ProviderApiError(msg, resp.statusCode)
-    }
-
-    return err
+  // eslint-disable-next-line class-methods-use-this
+  async #withErrorHandling (tag, fn) {
+    return withProviderErrorHandling({
+      fn,
+      tag,
+      providerName: Facebook.oauthProvider,
+      isAuthError: (response) => typeof response.body === 'object' && response.body?.error?.code === 190, // Invalid OAuth 2.0 Access Token
+      getJsonErrorMessage: (body) => body?.error?.message,
+    })
   }
 }
-
-Facebook.version = 2
-
-Facebook.prototype.list = promisify(Facebook.prototype._list)
-Facebook.prototype.size = promisify(Facebook.prototype._size)
-Facebook.prototype.logout = promisify(Facebook.prototype._logout)
 
 module.exports = Facebook

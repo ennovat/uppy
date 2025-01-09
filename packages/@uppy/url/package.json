@@ -1,11 +1,11 @@
 {
   "name": "@uppy/url",
   "description": "The Url plugin lets users import files from the Internet. Paste any URL and it’ll be added!",
-  "version": "2.0.4",
+  "version": "4.2.1",
   "license": "MIT",
   "main": "lib/index.js",
   "style": "dist/style.min.css",
-  "types": "types/index.d.ts",
+  "type": "module",
   "keywords": [
     "file uploader",
     "url",
@@ -24,6 +24,7 @@
   "dependencies": {
     "@uppy/companion-client": "workspace:^",
     "@uppy/utils": "workspace:^",
+    "nanoid": "^5.0.9",
     "preact": "^10.5.13"
   },
   "peerDependencies": {

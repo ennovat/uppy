@@ -1,6 +1,6 @@
-const chalk = require('chalk')
 const escapeStringRegexp = require('escape-string-regexp')
-const util = require('util')
+const util = require('node:util')
+const supportsColors = require('supports-color')
 
 const valuesToMask = []
 /**
@@ -23,7 +23,7 @@ exports.setMaskables = (maskables) => {
  * @param {string} msg the message whose content should be masked
  * @returns {string}
  */
-function maskMessage (msg) {
+function maskMessage(msg) {
   let out = msg
   for (const toBeMasked of valuesToMask) {
     const toBeReplaced = new RegExp(toBeMasked, 'gi')
@@ -32,89 +32,91 @@ function maskMessage (msg) {
   return out
 }
 
+let processName = 'companion'
+
+exports.setProcessName = (newProcessName) => {
+  processName = newProcessName
+}
+
+const styleText =
+  typeof util.styleText === "function" && supportsColors.stderr ?
+    util.styleText
+  : (style, text) => text;
+
+
 /**
  * message log
  *
- * @param {string | Error} msg the message to log
- * @param {string} tag a unique tag to easily search for this message
- * @param {string} level error | info | debug
- * @param {string=} id a unique id to easily trace logs tied to a request
- * @param {Function=} color function to display the log in appropriate color
- * @param {boolean=} shouldLogStackTrace when set to true, errors will be logged with their stack trace
+ * @param {object} params
+ * @param {string | Error} params.arg the message or error to log
+ * @param {string} params.tag a unique tag to easily search for this message
+ * @param {string} params.level error | info | debug
+ * @param {string} [params.traceId] a unique id to easily trace logs tied to a request
+ * @param {string[]} [params.color] Format(s) that can be passed to `util.styleText`.
  */
-const log = (msg, tag = '', level, id = '', color = (message) => message, shouldLogStackTrace) => {
+const log = ({ arg, tag = '', level, traceId = '', color = [] }) => {
   const time = new Date().toISOString()
-  const whitespace = tag && id ? ' ' : ''
+  const whitespace = tag && traceId ? ' ' : ''
 
-  function logMsg (msg2) {
-    let msgString = typeof msg2 === 'string' ? msg2 : util.inspect(msg2)
-    msgString = maskMessage(msgString)
-    // eslint-disable-next-line no-console
-    console.log(color(`companion: ${time} [${level}] ${id}${whitespace}${tag}`), color(msgString))
-  }
-
-  if (msg instanceof Error) {
-    // Not sure why it only logs the stack without the message, but this is how the code was originally
-    if (shouldLogStackTrace && typeof msg.stack === 'string') {
-      logMsg(msg.stack)
-      return
+  function msgToString() {
+    // We don't need to log stack trace on special errors that we ourselves have produced
+    // (to reduce log noise)
+    // @ts-ignore
+    if ((arg instanceof Error && arg.name === 'ProviderApiError') && typeof arg.message === 'string') {
+      return arg.message
     }
-
-    // We don't want to log stack trace (this is how the code was originally)
-    logMsg(String(msg))
-    return
+    if (typeof arg === 'string') return arg
+    return util.inspect(arg)
   }
 
-  logMsg(msg)
+  const msgString = msgToString()
+  const masked = maskMessage(msgString)
+  // eslint-disable-next-line no-console
+  console.log(styleText(color, `${processName}: ${time} [${level}] ${traceId}${whitespace}${tag}`), styleText(color, masked))
 }
 
 /**
  * INFO level log
  *
  * @param {string} msg the message to log
- * @param {string=} tag a unique tag to easily search for this message
- * @param {string=} traceId a unique id to easily trace logs tied to a request
+ * @param {string} [tag] a unique tag to easily search for this message
+ * @param {string} [traceId] a unique id to easily trace logs tied to a request
  */
 exports.info = (msg, tag, traceId) => {
-  log(msg, tag, 'info', traceId)
+  log({ arg: msg, tag, level: 'info', traceId })
 }
 
 /**
  * WARN level log
  *
  * @param {string} msg the message to log
- * @param {string=} tag a unique tag to easily search for this message
- * @param {string=} traceId a unique id to easily trace logs tied to a request
+ * @param {string} [tag] a unique tag to easily search for this message
+ * @param {string} [traceId] a unique id to easily trace logs tied to a request
  */
 exports.warn = (msg, tag, traceId) => {
-  // @ts-ignore
-  log(msg, tag, 'warn', traceId, chalk.bold.yellow)
+  log({ arg: msg, tag, level: 'warn', traceId, color: ['bold', 'yellow'] })
 }
 
 /**
  * ERROR level log
  *
  * @param {string | Error} msg the message to log
- * @param {string=} tag a unique tag to easily search for this message
- * @param {string=} traceId a unique id to easily trace logs tied to a request
- * @param {boolean=} shouldLogStackTrace when set to true, errors will be logged with their stack trace
+ * @param {string} [tag] a unique tag to easily search for this message
+ * @param {string} [traceId] a unique id to easily trace logs tied to a request
  */
-exports.error = (msg, tag, traceId, shouldLogStackTrace) => {
-  // @ts-ignore
-  log(msg, tag, 'error', traceId, chalk.bold.red, shouldLogStackTrace)
+exports.error = (msg, tag, traceId) => {
+  log({ arg: msg, tag, level: 'error', traceId, color: ['bold', 'red'] })
 }
 
 /**
  * DEBUG level log
  *
  * @param {string} msg the message to log
- * @param {string=} tag a unique tag to easily search for this message
- * @param {string=} traceId a unique id to easily trace logs tied to a request
+ * @param {string} [tag] a unique tag to easily search for this message
+ * @param {string} [traceId] a unique id to easily trace logs tied to a request
  */
 exports.debug = (msg, tag, traceId) => {
-  // @todo: this function should depend on companion's debug option instead
   if (process.env.NODE_ENV !== 'production') {
-    // @ts-ignore
-    log(msg, tag, 'debug', traceId, chalk.bold.blue)
+    log({ arg: msg, tag, level: 'debug', traceId, color: ['bold', 'blue'] })
   }
 }

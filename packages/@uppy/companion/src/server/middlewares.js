@@ -1,20 +1,56 @@
 const cors = require('cors')
-// @ts-ignore
 const promBundle = require('express-prom-bundle')
 
 // @ts-ignore
 const { version } = require('../../package.json')
 const tokenService = require('./helpers/jwt')
 const logger = require('./logger')
+const getS3Client = require('./s3-client')
+const { getURLBuilder } = require('./helpers/utils')
+const { isOAuthProvider } = require('./provider/Provider')
 
 exports.hasSessionAndProvider = (req, res, next) => {
-  if (!req.session || !req.body) {
-    logger.debug('No session/body attached to req object. Exiting dispatcher.', null, req.id)
+  if (!req.session) {
+    logger.debug('No session attached to req object. Exiting dispatcher.', null, req.id)
     return res.sendStatus(400)
   }
 
   if (!req.companion.provider) {
     logger.debug('No provider/provider-handler found. Exiting dispatcher.', null, req.id)
+    return res.sendStatus(400)
+  }
+
+  return next()
+}
+
+const isOAuthProviderReq = (req) => isOAuthProvider(req.companion.providerClass.oauthProvider)
+const isSimpleAuthProviderReq = (req) => !!req.companion.providerClass.hasSimpleAuth
+
+/**
+ * Middleware can be used to verify that the current request is to an OAuth provider
+ * This is because not all requests are supported by non-oauth providers (formerly known as SearchProviders)
+ */
+exports.hasOAuthProvider = (req, res, next) => {
+  if (!isOAuthProviderReq(req)) {
+    logger.debug('Provider does not support OAuth.', null, req.id)
+    return res.sendStatus(400)
+  }
+
+  return next()
+}
+
+exports.hasSimpleAuthProvider = (req, res, next) => {
+  if (!isSimpleAuthProviderReq(req)) {
+    logger.debug('Provider does not support simple auth.', null, req.id)
+    return res.sendStatus(400)
+  }
+
+  return next()
+}
+
+exports.hasBody = (req, res, next) => {
+  if (!req.body) {
+    logger.debug('No body attached to req object. Exiting dispatcher.', null, req.id)
     return res.sendStatus(400)
   }
 
@@ -31,69 +67,78 @@ exports.hasSearchQuery = (req, res, next) => {
 }
 
 exports.verifyToken = (req, res, next) => {
-  const token = req.companion.authToken
-  if (token == null) {
-    logger.info('cannot auth token', 'token.verify.unset', req.id)
-    return res.sendStatus(401)
-  }
-  const { providerName } = req.params
-  const { err, payload } = tokenService.verifyEncryptedToken(token, req.companion.options.secret)
-  if (err || !payload[providerName]) {
-    if (err) {
-      logger.error(err, 'token.verify.error', req.id)
+  if (isOAuthProviderReq(req) || isSimpleAuthProviderReq(req)) {
+    // For OAuth / simple auth provider, we find the encrypted auth token from the header:
+    const token = req.companion.authToken
+    if (token == null) {
+      logger.info('cannot auth token', 'token.verify.unset', req.id)
+      res.sendStatus(401)
+      return
     }
-    return res.sendStatus(401)
+    const { providerName } = req.params
+    try {
+      const payload = tokenService.verifyEncryptedAuthToken(token, req.companion.options.secret, providerName)
+      req.companion.providerUserSession = payload[providerName]
+    } catch (err) {
+      logger.error(err.message, 'token.verify.error', req.id)
+      res.sendStatus(401)
+      return
+    }
+    next()
+    return
   }
-  req.companion.providerTokens = payload
-  req.companion.providerToken = payload[providerName]
-  next()
+
+  // for non auth providers, we just load the static key from options
+  if (!isOAuthProviderReq(req)) {
+    const { providerOptions } = req.companion.options
+    const { providerName } = req.params
+    const key = providerOptions[providerName]?.key;
+    if (!key) {
+      logger.info(`unconfigured credentials for ${providerName}`, 'non.oauth.token.load.unset', req.id)
+      res.sendStatus(501)
+      return
+    }
+
+    req.companion.providerUserSession = {
+      accessToken: key,
+    }
+    next()
+  }
 }
 
 // does not fail if token is invalid
 exports.gentleVerifyToken = (req, res, next) => {
   const { providerName } = req.params
   if (req.companion.authToken) {
-    const { err, payload } = tokenService.verifyEncryptedToken(req.companion.authToken, req.companion.options.secret)
-    if (!err && payload[providerName]) {
-      req.companion.providerTokens = payload
+    try {
+      const payload = tokenService.verifyEncryptedAuthToken(
+        req.companion.authToken, req.companion.options.secret, providerName,
+      )
+      req.companion.providerUserSession = payload[providerName]
+    } catch (err) {
+      logger.error(err.message, 'token.gentle.verify.error', req.id)
     }
   }
   next()
 }
 
 exports.cookieAuthToken = (req, res, next) => {
-  req.companion.authToken = req.cookies[`uppyAuthToken--${req.companion.provider.authProvider}`]
+  req.companion.authToken = req.cookies[`uppyAuthToken--${req.companion.providerClass.oauthProvider}`]
   return next()
-}
-
-exports.loadSearchProviderToken = (req, res, next) => {
-  const { searchProviders } = req.companion.options.providerOptions
-  const providerName = req.params.searchProviderName
-  if (!searchProviders || !searchProviders[providerName] || !searchProviders[providerName].key) {
-    logger.info(`unconfigured credentials for ${providerName}`, 'searchtoken.load.unset', req.id)
-    return res.sendStatus(501)
-  }
-
-  req.companion.providerToken = searchProviders[providerName].key
-  next()
 }
 
 exports.cors = (options = {}) => (req, res, next) => {
   // HTTP headers are not case sensitive, and express always handles them in lower case, so that's why we lower case them.
   // I believe that HTTP verbs are case sensitive, and should be uppercase.
 
-  // TODO: Move to optional chaining when we drop Node.js v12.x support
   const existingExposeHeaders = res.get('Access-Control-Expose-Headers')
-  const exposeHeadersSet = new Set(existingExposeHeaders && existingExposeHeaders.split(',').map(method => method.trim().toLowerCase()))
+  const exposeHeadersSet = new Set(existingExposeHeaders?.split(',')?.map((method) => method.trim().toLowerCase()))
 
-  // exposed so it can be accessed for our custom uppy client preflight
-  exposeHeadersSet.add('access-control-allow-headers')
   if (options.sendSelfEndpoint) exposeHeadersSet.add('i-am')
 
   // Needed for basic operation: https://github.com/transloadit/uppy/issues/3021
   const allowedHeaders = [
     'uppy-auth-token',
-    'uppy-versions',
     'uppy-credentials-params',
     'authorization',
     'origin',
@@ -109,7 +154,7 @@ exports.cors = (options = {}) => (req, res, next) => {
     : allowedHeaders)
 
   const existingAllowMethods = res.get('Access-Control-Allow-Methods')
-  const allowMethodsSet = new Set(existingAllowMethods && existingAllowMethods.split(',').map(method => method.trim().toUpperCase()))
+  const allowMethodsSet = new Set(existingAllowMethods?.split(',')?.map((method) => method.trim().toUpperCase()))
   // Needed for basic operation:
   allowMethodsSet.add('GET').add('POST').add('OPTIONS').add('DELETE')
 
@@ -130,8 +175,8 @@ exports.cors = (options = {}) => (req, res, next) => {
   })(req, res, next)
 }
 
-exports.metrics = () => {
-  const metricsMiddleware = promBundle({ includeMethod: true })
+exports.metrics = ({ path = undefined } = {}) => {
+  const metricsMiddleware = promBundle({ includeMethod: true, metricsPath: path ? `${path}/metrics` : undefined })
   // @ts-ignore Not in the typings, but it does exist
   const { promClient } = metricsMiddleware
   const { collectDefaultMetrics } = promClient
@@ -139,8 +184,31 @@ exports.metrics = () => {
 
   // Add version as a prometheus gauge
   const versionGauge = new promClient.Gauge({ name: 'companion_version', help: 'npm version as an integer' })
-  // @ts-ignore
   const numberVersion = Number(version.replace(/\D/g, ''))
   versionGauge.set(numberVersion)
   return metricsMiddleware
+}
+
+/**
+ *
+ * @param {object} options
+ */
+exports.getCompanionMiddleware = (options) => {
+  /**
+   * @param {object} req
+   * @param {object} res
+   * @param {Function} next
+   */
+  const middleware = (req, res, next) => {
+    req.companion = {
+      options,
+      s3Client: getS3Client(options, false),
+      s3ClientCreatePresignedPost: getS3Client(options, true),
+      authToken: req.header('uppy-auth-token') || req.query.uppyAuthToken,
+      buildURL: getURLBuilder(options),
+    }
+    next()
+  }
+
+  return middleware
 }

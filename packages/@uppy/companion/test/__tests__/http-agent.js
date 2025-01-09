@@ -1,124 +1,69 @@
-/* global test:false, expect:false, describe:false, */
+const nock = require('nock')
+const { FORBIDDEN_IP_ADDRESS } = require('../../src/server/helpers/request')
+const { getProtectedGot } = require('../../src/server/helpers/request')
 
-const request = require('request')
-const http = require('http')
-const https = require('https')
-const { getProtectedHttpAgent, getRedirectEvaluator, FORBIDDEN_IP_ADDRESS } = require('../../src/server/helpers/request')
-
-describe('test getRedirectEvaluator', () => {
-  const httpURL = 'http://uppy.io'
-  const httpsURL = 'https://uppy.io'
-  const httpRedirectResp = {
-    headers: {
-      location: 'http://transloadit.com',
-    },
-  }
-
-  const httpsRedirectResp = {
-    headers: {
-      location: 'https://transloadit.com',
-    },
-  }
-
-  test('when original URL has "https:" as protocol', (done) => {
-    const shouldRedirectHttps = getRedirectEvaluator(httpsURL, true)
-    expect(shouldRedirectHttps(httpsRedirectResp)).toEqual(true)
-    expect(shouldRedirectHttps(httpRedirectResp)).toEqual(false)
-    done()
-  })
-
-  test('when original URL has "http:" as protocol', (done) => {
-    const shouldRedirectHttp = getRedirectEvaluator(httpURL, true)
-    expect(shouldRedirectHttp(httpRedirectResp)).toEqual(true)
-    expect(shouldRedirectHttp(httpsRedirectResp)).toEqual(false)
-    done()
-  })
-})
-
-describe('test getProtectedHttpAgent', () => {
-  test('setting "https:" as protocol', (done) => {
-    const Agent = getProtectedHttpAgent('https:')
-    expect(Agent).toEqual(https.Agent)
-    done()
-  })
-
-  test('setting "https" as protocol', (done) => {
-    const Agent = getProtectedHttpAgent('https')
-    expect(Agent).toEqual(https.Agent)
-    done()
-  })
-
-  test('setting "http:" as protocol', (done) => {
-    const Agent = getProtectedHttpAgent('http:')
-    expect(Agent).toEqual(http.Agent)
-    done()
-  })
-
-  test('setting "http" as protocol', (done) => {
-    const Agent = getProtectedHttpAgent('http')
-    expect(Agent).toEqual(http.Agent)
-    done()
-  })
+afterAll(() => {
+  nock.cleanAll()
+  nock.restore()
 })
 
 describe('test protected request Agent', () => {
-  test('allows URLs without IP addresses', (done) => {
-    const options = {
-      uri: 'https://transloadit.com',
-      method: 'GET',
-      agentClass: getProtectedHttpAgent('https', true),
-    }
-
-    request(options, (err) => {
-      if (err) {
-        expect(err.message).not.toEqual(FORBIDDEN_IP_ADDRESS)
-        expect(err.message.startsWith(FORBIDDEN_IP_ADDRESS)).toEqual(false)
-        done()
-      } else {
-        done()
-      }
-    })
+  test('allows URLs without IP addresses', async () => {
+    nock('https://transloadit.com').get('/').reply(200)
+    const url = 'https://transloadit.com'
+    return (await getProtectedGot({ allowLocalIPs: false })).get(url)
   })
 
-  test('blocks private http IP address', (done) => {
-    const options = {
-      uri: 'http://172.20.10.4:8090',
-      method: 'GET',
-      agentClass: getProtectedHttpAgent('http', true),
-    }
-
-    request(options, (err) => {
-      expect(err).toBeInstanceOf(Error)
-      expect(err.message).toEqual(FORBIDDEN_IP_ADDRESS)
-      done()
-    })
+  test('blocks url that resolves to forbidden IP', async () => {
+    const url = 'https://localhost'
+    const promise = getProtectedGot({ allowLocalIPs: false }).then(got => got.get(url))
+    await expect(promise).rejects.toThrow(/^Forbidden resolved IP address/)
   })
 
-  test('blocks private https IP address', (done) => {
-    const options = {
-      uri: 'https://172.20.10.4:8090',
-      method: 'GET',
-      agentClass: getProtectedHttpAgent('https', true),
-    }
-
-    request(options, (err) => {
-      expect(err).toBeInstanceOf(Error)
-      expect(err.message).toEqual(FORBIDDEN_IP_ADDRESS)
-      done()
-    })
+  test('blocks private http IP address', async () => {
+    const url = 'http://172.20.10.4:8090'
+    const promise = getProtectedGot({ allowLocalIPs: false }).then(got => got.get(url))
+    await expect(promise).rejects.toThrow(new Error(FORBIDDEN_IP_ADDRESS))
   })
 
-  test('blocks localhost IP address', (done) => {
-    const options = {
-      uri: 'http://127.0.0.1:8090',
-      method: 'GET',
-      agentClass: getProtectedHttpAgent('http', true),
-    }
+  test('blocks private https IP address', async () => {
+    const url = 'https://172.20.10.4:8090'
+    const promise = getProtectedGot({ allowLocalIPs: false }).then(got => got.get(url))
+    await expect(promise).rejects.toThrow(new Error(FORBIDDEN_IP_ADDRESS))
+  })
 
-    request(options, (err) => {
-      expect(err).toBeInstanceOf(Error)
-      expect(err.message).toEqual(FORBIDDEN_IP_ADDRESS)
-      done()
-    })
+  test('blocks various private IP addresses', async () => {
+    // eslint-disable-next-line max-len
+    // taken from: https://github.com/transloadit/uppy/blob/4aeef4dac0490ebb1d1fccd5582ba42c6c0fb87d/packages/%40uppy/companion/src/server/helpers/request.js#L14
+    const ipv4s = [
+      '0.0.0.0',
+      '0.0.0.1',
+      '127.0.0.1',
+      '127.16.0.1',
+      '192.168.1.1',
+      '169.254.1.1',
+      '10.0.0.1',
+    ]
+
+    const ipv6s = [
+      'fd80::1234:5678:abcd:0123',
+      'fe80::1234:5678:abcd:0123',
+      'ff00::1234',
+      '::ffff:192.168.1.10',
+      '::1',
+      '0:0:0:0:0:0:0:1',
+      'fda1:3f9f:dbf7::1c8d',
+    ]
+
+    for (const ip of ipv4s) {
+      const url = `http://${ip}:8090`
+      const promise = getProtectedGot({ allowLocalIPs: false }).then(got => got.get(url))
+      await expect(promise).rejects.toThrow(new Error(FORBIDDEN_IP_ADDRESS))
+    }
+    for (const ip of ipv6s) {
+      const url = `http://[${ip}]:8090`
+      const promise = getProtectedGot({ allowLocalIPs: false }).then(got => got.get(url))
+      await expect(promise).rejects.toThrow(new Error(FORBIDDEN_IP_ADDRESS))
+    }
   })
 })

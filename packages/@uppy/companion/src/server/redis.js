@@ -1,21 +1,34 @@
-const redis = require('redis')
+const Redis = require('ioredis').default
 
+const logger = require('./logger')
+
+/** @type {import('ioredis').Redis} */
 let redisClient
 
 /**
- * A Singleton module that provides only on redis client through out
+ * A Singleton module that provides a single redis client through out
  * the lifetime of the server
  *
- * @param {object=} opts node-redis client options
+ * @param {string} [redisUrl] ioredis url
+ * @param {Record<string, any>} [redisOptions] ioredis client options
  */
-module.exports.client = (opts) => {
-  if (!opts) {
-    return redisClient
-  }
-
+function createClient (redisUrl, redisOptions) {
   if (!redisClient) {
-    redisClient = redis.createClient(opts)
+    if (redisUrl) {
+      redisClient = new Redis(redisUrl, redisOptions)
+    } else {
+      redisClient = new Redis(redisOptions)
+    }
+    redisClient.on('error', err => logger.error('redis error', err.toString()))
   }
 
   return redisClient
+}
+
+module.exports.client = ({ redisUrl, redisOptions } = { redisUrl: undefined, redisOptions: undefined }) => {
+  if (!redisUrl && !redisOptions) {
+    return redisClient
+  }
+
+  return createClient(redisUrl, redisOptions)
 }

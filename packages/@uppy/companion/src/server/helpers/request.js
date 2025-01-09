@@ -1,200 +1,163 @@
-const http = require('http')
-const https = require('https')
-const { URL } = require('url')
-const dns = require('dns')
-const ipAddress = require('ip-address')
-const request = require('request')
-const logger = require('../logger')
+// eslint-disable-next-line max-classes-per-file
+const http = require('node:http')
+const https = require('node:https')
+const dns = require('node:dns')
+const ipaddr = require('ipaddr.js')
+const path = require('node:path')
+const contentDisposition = require('content-disposition')
+const validator = require('validator')
+
+const got = require('../got')
 
 const FORBIDDEN_IP_ADDRESS = 'Forbidden IP address'
 
-function isIPAddress (address) {
-  const addressAsV6 = new ipAddress.Address6(address)
-  const addressAsV4 = new ipAddress.Address4(address)
-  return addressAsV6.isValid() || addressAsV4.isValid()
-}
-
-/* eslint-disable max-len */
-/**
- * Determine if a IP address provided is a private one.
- * Return TRUE if it's the case, FALSE otherwise.
- * Excerpt from:
- * https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html#case-2---application-can-send-requests-to-any-external-ip-address-or-domain-name
- *
- * @param {string} ipAddress the ip address to validate
- * @returns {boolean}
- */
-/* eslint-enable max-len */
-function isPrivateIP (ipAddress) {
-  let isPrivate = false
-  // Build the list of IP prefix for V4 and V6 addresses
-  const ipPrefix = []
-  // Add prefix for loopback addresses
-  ipPrefix.push('127.')
-  ipPrefix.push('0.')
-  // Add IP V4 prefix for private addresses
-  // See https://en.wikipedia.org/wiki/Private_network
-  ipPrefix.push('10.')
-  ipPrefix.push('172.16.')
-  ipPrefix.push('172.17.')
-  ipPrefix.push('172.18.')
-  ipPrefix.push('172.19.')
-  ipPrefix.push('172.20.')
-  ipPrefix.push('172.21.')
-  ipPrefix.push('172.22.')
-  ipPrefix.push('172.23.')
-  ipPrefix.push('172.24.')
-  ipPrefix.push('172.25.')
-  ipPrefix.push('172.26.')
-  ipPrefix.push('172.27.')
-  ipPrefix.push('172.28.')
-  ipPrefix.push('172.29.')
-  ipPrefix.push('172.30.')
-  ipPrefix.push('172.31.')
-  ipPrefix.push('192.168.')
-  ipPrefix.push('169.254.')
-  // Add IP V6 prefix for private addresses
-  // See https://en.wikipedia.org/wiki/Unique_local_address
-  // See https://en.wikipedia.org/wiki/Private_network
-  // See https://simpledns.com/private-ipv6
-  ipPrefix.push('fc')
-  ipPrefix.push('fd')
-  ipPrefix.push('fe')
-  ipPrefix.push('ff')
-  ipPrefix.push('::1')
-  // Verify the provided IP address
-  // Remove whitespace characters from the beginning/end of the string
-  // and convert it to lower case
-  // Lower case is for preventing any IPV6 case bypass using mixed case
-  // depending on the source used to get the IP address
-  const ipToVerify = ipAddress.trim().toLowerCase()
-  // Perform the check against the list of prefix
-  for (const prefix of ipPrefix) {
-    if (ipToVerify.startsWith(prefix)) {
-      isPrivate = true
-      break
-    }
-  }
-
-  return isPrivate
-}
+// Example scary IPs that should return false (ipv6-to-ipv4 mapped):
+// ::FFFF:127.0.0.1
+// ::ffff:7f00:1
+const isDisallowedIP = (ipAddress) => ipaddr.parse(ipAddress).range() !== 'unicast'
 
 module.exports.FORBIDDEN_IP_ADDRESS = FORBIDDEN_IP_ADDRESS
 
-module.exports.getRedirectEvaluator = (rawRequestURL, blockPrivateIPs) => {
-  const requestURL = new URL(rawRequestURL)
-  return (res) => {
-    if (!blockPrivateIPs) {
-      return true
-    }
-
-    let redirectURL = null
-    try {
-      redirectURL = new URL(res.headers.location, requestURL)
-    } catch (err) {
-      return false
-    }
-
-    const shouldRedirect = redirectURL.protocol === requestURL.protocol
-    if (!shouldRedirect) {
-      logger.info(
-        `blocking redirect from ${requestURL} to ${redirectURL}`, 'redirect.protection',
-      )
-    }
-
-    return shouldRedirect
+/**
+ * Validates that the download URL is secure
+ *
+ * @param {string} url the url to validate
+ * @param {boolean} allowLocalUrls whether to allow local addresses
+ */
+const validateURL = (url, allowLocalUrls) => {
+  if (!url) {
+    return false
   }
-}
 
-function dnsLookup (hostname, options, callback) {
-  dns.lookup(hostname, options, (err, addresses, maybeFamily) => {
-    if (err) {
-      callback(err, addresses, maybeFamily)
-      return
-    }
-
-    const toValidate = Array.isArray(addresses) ? addresses : [{ address: addresses }]
-    for (const record of toValidate) {
-      if (isPrivateIP(record.address)) {
-        callback(new Error(FORBIDDEN_IP_ADDRESS), addresses, maybeFamily)
-        return
-      }
-    }
-
-    callback(err, addresses, maybeFamily)
-  })
-}
-
-class HttpAgent extends http.Agent {
-  createConnection (options, callback) {
-    if (isIPAddress(options.host) && isPrivateIP(options.host)) {
-      callback(new Error(FORBIDDEN_IP_ADDRESS))
-      return undefined
-    }
-    // @ts-ignore
-    return super.createConnection({ ...options, lookup: dnsLookup }, callback)
+  const validURLOpts = {
+    protocols: ['http', 'https'],
+    require_protocol: true,
+    require_tld: !allowLocalUrls,
   }
+  if (!validator.isURL(url, validURLOpts)) {
+    return false
+  }
+
+  return true
 }
 
-class HttpsAgent extends https.Agent {
-  createConnection (options, callback) {
-    if (isIPAddress(options.host) && isPrivateIP(options.host)) {
-      callback(new Error(FORBIDDEN_IP_ADDRESS))
-      return undefined
-    }
-    // @ts-ignore
-    return super.createConnection({ ...options, lookup: dnsLookup }, callback)
-  }
-}
+module.exports.validateURL = validateURL
 
 /**
- * Returns http Agent that will prevent requests to private IPs (to preven SSRF)
- *
- * @param {string} protocol http or http: or https: or https protocol needed for the request
- * @param {boolean} blockPrivateIPs if set to false, this protection will be disabled
+ * Returns http Agent that will prevent requests to private IPs (to prevent SSRF)
  */
-module.exports.getProtectedHttpAgent = (protocol, blockPrivateIPs) => {
-  if (blockPrivateIPs) {
-    return protocol.startsWith('https') ? HttpsAgent : HttpAgent
+const getProtectedHttpAgent = ({ protocol, allowLocalIPs }) => {
+  function dnsLookup (hostname, options, callback) {
+    dns.lookup(hostname, options, (err, addresses, maybeFamily) => {
+      if (err) {
+        callback(err, addresses, maybeFamily)
+        return
+      }
+
+      const toValidate = Array.isArray(addresses) ? addresses : [{ address: addresses }]
+      // because dns.lookup seems to be called with option `all: true`, if we are on an ipv6 system,
+      // `addresses` could contain a list of ipv4 addresses as well as ipv6 mapped addresses (rfc6052) which we cannot allow
+      // however we should still allow any valid ipv4 addresses, so we filter out the invalid addresses
+      const validAddresses = allowLocalIPs ? toValidate : toValidate.filter(({ address }) => !isDisallowedIP(address))
+
+      // and check if there's anything left after we filtered:
+      if (validAddresses.length === 0) {
+        callback(new Error(`Forbidden resolved IP address ${hostname} -> ${toValidate.map(({ address }) => address).join(', ')}`), addresses, maybeFamily)
+        return
+      }
+
+      const ret = Array.isArray(addresses) ? validAddresses : validAddresses[0].address;
+      callback(err, ret, maybeFamily)
+    })
   }
 
-  return protocol.startsWith('https') ? https.Agent : http.Agent
+  return class HttpAgent extends (protocol.startsWith('https') ? https : http).Agent {
+    createConnection (options, callback) {
+      if (ipaddr.isValid(options.host) && !allowLocalIPs && isDisallowedIP(options.host)) {
+        callback(new Error(FORBIDDEN_IP_ADDRESS))
+        return undefined
+      }
+      // @ts-ignore
+      return super.createConnection({ ...options, lookup: dnsLookup }, callback)
+    }
+  }
 }
+
+module.exports.getProtectedHttpAgent = getProtectedHttpAgent
+
+async function getProtectedGot ({ allowLocalIPs }) {
+  const HttpAgent = getProtectedHttpAgent({ protocol: 'http', allowLocalIPs })
+  const HttpsAgent = getProtectedHttpAgent({ protocol: 'https', allowLocalIPs })
+  const httpAgent = new HttpAgent()
+  const httpsAgent = new HttpsAgent()
+
+
+  // @ts-ignore
+  return (await got).extend({ agent: { http: httpAgent, https: httpsAgent } })
+}
+
+module.exports.getProtectedGot = getProtectedGot
 
 /**
  * Gets the size and content type of a url's content
  *
  * @param {string} url
- * @param {boolean} blockLocalIPs
- * @returns {Promise<{type: string, size: number}>}
+ * @param {boolean} allowLocalIPs
+ * @returns {Promise<{name: string, type: string, size: number}>}
  */
-exports.getURLMeta = (url, blockLocalIPs = false) => {
-  return new Promise((resolve, reject) => {
-    const opts = {
-      uri: url,
-      method: 'GET',
-      followRedirect: exports.getRedirectEvaluator(url, blockLocalIPs),
-      agentClass: exports.getProtectedHttpAgent((new URL(url)).protocol, blockLocalIPs),
-    }
+exports.getURLMeta = async (url, allowLocalIPs = false, options = undefined) => {
+  async function requestWithMethod (method) {
+    const protectedGot = await getProtectedGot({ allowLocalIPs })
+    const stream = protectedGot.stream(url, { method, throwHttpErrors: false, ...options })
 
-    const req = request(opts, (err) => {
-      if (err) reject(err)
-    })
-    req.on('response', (response) => {
-      if (response.statusCode >= 300) {
-        // @todo possibly set a status code in the error object to get a more helpful
-        // hint at what the cause of error is.
-        reject(new Error(`URL server responded with status: ${response.statusCode}`))
-      } else {
-        req.abort() // No need to get the rest of the response, as we only want header
+    return new Promise((resolve, reject) => (
+      stream
+        .on('response', (response) => {
+          // Can be undefined for unknown length URLs, e.g. transfer-encoding: chunked
+          const contentLength = parseInt(response.headers['content-length'], 10)
+          // If Content-Disposition with file name is missing, fallback to the URL path for the name,
+          // but if multiple files are served via query params like foo.com?file=file-1, foo.com?file=file-2,
+          // we add random string to avoid duplicate files
+          const filename = response.headers['content-disposition']
+            ? contentDisposition.parse(response.headers['content-disposition']).parameters.filename
+            : path.basename(`${response.request.requestUrl}`)
 
-        // Can be undefined for unknown length URLs, e.g. transfer-encoding: chunked
-        const contentLength = parseInt(response.headers['content-length'], 10)
-        resolve({
-          type: response.headers['content-type'],
-          size: Number.isNaN(contentLength) ? null : contentLength,
+          // No need to get the rest of the response, as we only want header (not really relevant for HEAD, but why not)
+          stream.destroy()
+
+          resolve({
+            name: filename,
+            type: response.headers['content-type'],
+            size: Number.isNaN(contentLength) ? null : contentLength,
+            statusCode: response.statusCode,
+          })
         })
-      }
-    })
-  })
+        .on('error', (err) => {
+          reject(err)
+        })
+    ))
+  }
+
+  // We prefer to use a HEAD request, as it doesn't download the content. If the URL doesn't
+  // support HEAD, or doesn't follow the spec and provide the correct Content-Length, we
+  // fallback to GET.
+  let urlMeta = await requestWithMethod('HEAD')
+
+  // If HTTP error response, we retry with GET, which may work on non-compliant servers
+  // (e.g. HEAD doesn't work on signed S3 URLs)
+  // We look for status codes in the 400 and 500 ranges here, as 3xx errors are
+  // unlikely to have to do with our choice of method
+  // todo add unit test for this
+  if (urlMeta.statusCode >= 400 || urlMeta.size === 0 || urlMeta.size == null) {
+    urlMeta = await requestWithMethod('GET')
+  }
+
+  if (urlMeta.statusCode >= 300) {
+    // @todo possibly set a status code in the error object to get a more helpful
+    // hint at what the cause of error is.
+    throw new Error(`URL server responded with status: ${urlMeta.statusCode}`)
+  }
+
+  const { name, size, type } = urlMeta
+  return { name, size, type }
 }
