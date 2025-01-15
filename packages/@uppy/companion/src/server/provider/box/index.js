@@ -1,15 +1,28 @@
-const request = require('request')
-const purest = require('purest')({ request })
-const { promisify } = require('util')
-
 const Provider = require('../Provider')
-const logger = require('../../logger')
-const adapter = require('./adapter')
-const { ProviderApiError, ProviderAuthError } = require('../error')
-const { requestStream } = require('../../helpers/utils')
+const adaptData = require('./adapter')
+const { withProviderErrorHandling } = require('../providerErrors')
+const { prepareStream } = require('../../helpers/utils')
+
+const got = require('../../got')
 
 const BOX_FILES_FIELDS = 'id,modified_at,name,permissions,size,type'
 const BOX_THUMBNAIL_SIZE = 256
+
+const getClient = async ({ token }) => (await got).extend({
+  prefixUrl: 'https://api.box.com/2.0',
+  headers: {
+    authorization: `Bearer ${token}`,
+  },
+})
+
+async function getUserInfo ({ token }) {
+  return (await getClient({ token })).get('users/me', { responseType: 'json' }).json()
+}
+
+async function list ({ directory, query, token }) {
+  const rootFolderID = '0'
+  return (await getClient({ token })).get(`folders/${directory || rootFolderID}/items`, { searchParams: { fields: BOX_FILES_FIELDS, offset: query.cursor, limit: 1000 }, responseType: 'json' }).json()
+}
 
 /**
  * Adapter for API https://developer.box.com/reference/
@@ -17,180 +30,100 @@ const BOX_THUMBNAIL_SIZE = 256
 class Box extends Provider {
   constructor (options) {
     super(options)
-    this.authProvider = Box.authProvider
-    this.client = purest({
-      ...options,
-      provider: Box.authProvider,
-    })
     // needed for the thumbnails fetched via companion
     this.needsCookieAuth = true
   }
 
-  static get authProvider () {
+  static get oauthProvider () {
     return 'box'
-  }
-
-  _userInfo ({ token }, done) {
-    this.client
-      .get('users/me')
-      .auth(token)
-      .request(done)
   }
 
   /**
    * Lists files and folders from Box API
    *
    * @param {object} options
-   * @param {Function} done
+   * @param {string} options.directory
+   * @param {any} options.query
+   * @param {string} options.token
+   * @param {unknown} options.companion
    */
-  _list ({ directory, token, query, companion }, done) {
-    const rootFolderID = '0'
-    const path = `folders/${directory || rootFolderID}/items`
+  async list ({ directory, token, query, companion }) {
+    return this.#withErrorHandling('provider.box.list.error', async () => {
+      const [userInfo, files] = await Promise.all([
+        getUserInfo({ token }),
+        list({ directory, query, token }),
+      ])
 
-    this.client
-      .get(path)
-      .qs({ fields: BOX_FILES_FIELDS, offset: query.cursor })
-      .auth(token)
-      .request((err, resp, body) => {
-        if (err || resp.statusCode !== 200) {
-          err = this._error(err, resp)
-          logger.error(err, 'provider.box.list.error')
-          return done(err)
-        }
-        this._userInfo({ token }, (err, infoResp) => {
-          if (err || infoResp.statusCode !== 200) {
-            err = this._error(err, infoResp)
-            logger.error(err, 'provider.token.user.error')
-            return done(err)
-          }
-          done(null, this.adaptData(body, infoResp.body.login, companion))
-        })
-      })
+      return adaptData(files, userInfo.login, companion)
+    })
   }
 
   async download ({ id, token }) {
-    try {
-      const req = this.client
-        .get(`files/${id}/content`)
-        .auth(token)
-        .request()
-      return await requestStream(req, async (res) => this._error(null, res))
-    } catch (err) {
-      logger.error(err, 'provider.box.download.error')
-      throw err
-    }
+    return this.#withErrorHandling('provider.box.download.error', async () => {
+      const stream = (await getClient({ token })).stream.get(`files/${id}/content`, { responseType: 'json' })
+
+      await prepareStream(stream)
+      return { stream }
+    })
   }
 
-  _thumbnail ({ id, token }, done) {
-    return this.client
-      .get(`files/${id}/thumbnail.png`)
-      .qs({ max_height: BOX_THUMBNAIL_SIZE, max_width: BOX_THUMBNAIL_SIZE })
-      .auth(token)
-      .request()
-      .on('response', (resp) => {
-        // box generates a thumbnail on first request
-        // so they return a placeholder in the header while that's happening
-        if (resp.statusCode === 202 && resp.headers.location) {
-          return this.client.get(resp.headers.location)
-            .request()
-            .on('response', (placeholderResp) => {
-              if (placeholderResp.statusCode !== 200) {
-                const err = this._error(null, placeholderResp)
-                logger.error(err, 'provider.box.thumbnail.error')
-                return done(err)
-              }
+  async thumbnail ({ id, token }) {
+    return this.#withErrorHandling('provider.box.thumbnail.error', async () => {
+      const extension = 'jpg' // you can set this to png to more easily reproduce http 202 retry-after
 
-              done(null, placeholderResp)
-            })
-        }
+      // From box API docs:
+      // Sometimes generating a thumbnail can take a few seconds.
+      // In these situations the API returns a Location-header pointing to a placeholder graphic
+      // for this file type.
+      // The placeholder graphic can be used in a user interface until the thumbnail generation has completed.
+      // The Retry-After-header indicates when to the thumbnail will be ready.
+      // At that time, retry this endpoint to retrieve the thumbnail.
+      //
+      // This can be reproduced more easily by changing extension to png and trying on a newly uploaded image
+      const stream = (await getClient({ token })).stream.get(`files/${id}/thumbnail.${extension}`, {
+        searchParams: { max_height: BOX_THUMBNAIL_SIZE, max_width: BOX_THUMBNAIL_SIZE },
+        responseType: 'json',
+      })
 
-        if (resp.statusCode !== 200) {
-          const err = this._error(null, resp)
-          logger.error(err, 'provider.box.thumbnail.error')
-          return done(err)
-        }
-        done(null, resp)
-      })
-      .on('error', (err) => {
-        logger.error(err, 'provider.box.thumbnail.error')
-      })
+      await prepareStream(stream)
+      return { stream, contentType: 'image/jpeg' }
+    })
   }
 
-  _size ({ id, token }, done) {
-    return this.client
-      .get(`files/${id}`)
-      .auth(token)
-      .request((err, resp, body) => {
-        if (err || resp.statusCode !== 200) {
-          err = this._error(err, resp)
-          logger.error(err, 'provider.box.size.error')
-          return done(err)
-        }
-        done(null, parseInt(body.size, 10))
-      })
+  async size ({ id, token }) {
+    return this.#withErrorHandling('provider.box.size.error', async () => {
+      const { size } = await (await getClient({ token })).get(`files/${id}`, { responseType: 'json' }).json()
+      return parseInt(size, 10)
+    })
   }
 
-  _logout ({ companion, token }, done) {
-    const { key, secret } = companion.options.providerOptions.box
-
-    return this.client
-      .post('https://api.box.com/oauth2/revoke')
-      .options({
-        formData: {
+  logout ({ companion, token }) {
+    return this.#withErrorHandling('provider.box.logout.error', async () => {
+      const { key, secret } = companion.options.providerOptions.box
+      await (await getClient({ token })).post('oauth2/revoke', {
+        prefixUrl: 'https://api.box.com',
+        form: {
           client_id: key,
           client_secret: secret,
           token,
         },
+        responseType: 'json',
       })
-      .auth(token)
-      .request((err, resp) => {
-        if (err || resp.statusCode !== 200) {
-          logger.error(err, 'provider.box.logout.error')
-          done(this._error(err, resp))
-          return
-        }
-        done(null, { revoked: true })
-      })
-  }
 
-  adaptData (res, username, companion) {
-    const data = { username, items: [] }
-    const items = adapter.getItemSubList(res)
-    items.forEach((item) => {
-      data.items.push({
-        isFolder: adapter.isFolder(item),
-        icon: adapter.getItemIcon(item),
-        name: adapter.getItemName(item),
-        mimeType: adapter.getMimeType(item),
-        id: adapter.getItemId(item),
-        thumbnail: companion.buildURL(adapter.getItemThumbnailUrl(item), true),
-        requestPath: adapter.getItemRequestPath(item),
-        modifiedDate: adapter.getItemModifiedDate(item),
-        size: adapter.getItemSize(item),
-      })
+      return { revoked: true }
     })
-
-    data.nextPagePath = adapter.getNextPagePath(res)
-
-    return data
   }
 
-  _error (err, resp) {
-    if (resp) {
-      const fallbackMessage = `request to ${this.authProvider} returned ${resp.statusCode}`
-      const errMsg = (resp.body || {}).message ? resp.body.message : fallbackMessage
-      return resp.statusCode === 401 ? new ProviderAuthError() : new ProviderApiError(errMsg, resp.statusCode)
-    }
-
-    return err
+  // eslint-disable-next-line class-methods-use-this
+  async #withErrorHandling (tag, fn) {
+    return withProviderErrorHandling({
+      fn,
+      tag,
+      providerName: Box.oauthProvider,
+      isAuthError: (response) => response.statusCode === 401,
+      getJsonErrorMessage: (body) => body?.message,
+    })
   }
 }
-
-Box.version = 2
-
-Box.prototype.list = promisify(Box.prototype._list)
-Box.prototype.thumbnail = promisify(Box.prototype._thumbnail)
-Box.prototype.size = promisify(Box.prototype._size)
-Box.prototype.logout = promisify(Box.prototype._logout)
 
 module.exports = Box

@@ -10,17 +10,17 @@ module.exports = (api) => {
         include: [
           '@babel/plugin-proposal-nullish-coalescing-operator',
           '@babel/plugin-proposal-optional-chaining',
+          '@babel/plugin-proposal-numeric-separator',
         ],
         loose: true,
         targets,
         useBuiltIns: false, // Don't add polyfills automatically.
-        // We can uncomment the following line if we start adding polyfills to the non-legacy dist files.
-        // corejs: { version: '3.15', proposals: true },
+        modules: false,
       }],
     ],
     plugins: [
-      ['@babel/plugin-transform-react-jsx', { pragma: 'h' }],
-      'babel-plugin-inline-package-json',
+      ['@babel/plugin-transform-react-jsx', { pragma: 'h', pragmaFrag: 'Fragment' }],
+      process.env.NODE_ENV !== 'dev' && 'babel-plugin-inline-package-json',
     ].filter(Boolean),
   }
 }

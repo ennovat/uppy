@@ -1,7 +1,7 @@
 const express = require('express')
 const bodyParser = require('body-parser')
 const session = require('express-session')
-const companion = require('../../../packages/@uppy/companion')
+const companion = require('@uppy/companion')
 
 const app = express()
 
@@ -24,7 +24,7 @@ app.get('/', (req, res) => {
 })
 
 // initialize uppy
-const uppyOptions = {
+const companionOptions = {
   providerOptions: {
     drive: {
       key: 'your google key',
@@ -53,7 +53,8 @@ const uppyOptions = {
   debug: true,
 }
 
-app.use(companion.app(uppyOptions))
+const { app: companionApp } = companion.app(companionOptions)
+app.use(companionApp)
 
 // handle 404
 app.use((req, res) => {
@@ -63,7 +64,7 @@ app.use((req, res) => {
 // handle server errors
 app.use((err, req, res) => {
   console.error('\x1b[31m', err.stack, '\x1b[0m')
-  res.status(err.status || 500).json({ message: err.message, error: err })
+  res.status(500).json({ message: err.message, error: err })
 })
 
 companion.socket(app.listen(3020))
