@@ -7,90 +7,101 @@
       <input
         type="checkbox"
         :checked="showInlineDashboard"
-        @change="(event) => {
-          showInlineDashboard = event.target.checked
-        }"
+        @change="
+          (event) => {
+            showInlineDashboard = event.target.checked
+          }
+        "
       />
       Show Dashboard
     </label>
-    <dashboard
+    <Dashboard
       v-if="showInlineDashboard"
       :uppy="uppy"
       :props="{
-        metaFields: [{ id: 'name', name: 'Name', placeholder: 'File name' }]
+        metaFields: [{ id: 'name', name: 'Name', placeholder: 'File name' }],
       }"
     />
     <h2>Modal Dashboard</h2>
     <div>
       <button @click="open = true">Show Dashboard</button>
-    <dashboard-modal
-      :uppy="uppy2" 
-      :open="open" 
-      :props="{
-        onRequestCloseModal: handleClose
-      }"
-    />
+      <DashboardModal
+        :uppy="uppy2"
+        :open="open"
+        :props="{
+          onRequestCloseModal: handleClose,
+        }"
+      />
     </div>
 
     <h2>Drag Drop Area</h2>
-    <drag-drop 
+    <DragDrop
       :uppy="uppy"
       :props="{
         locale: {
           strings: {
             chooseFile: 'Boop a file',
-            orDragDrop: 'or yoink it here'
-          }
-        }
+            orDragDrop: 'or yoink it here',
+          },
+        },
       }"
     />
 
     <h2>Progress Bar</h2>
-    <progress-bar 
+    <ProgressBar
       :uppy="uppy"
       :props="{
-        hideAfterFinish: false
+        hideAfterFinish: false,
       }"
     />
   </div>
 </template>
 
+<script setup>
+import { Dashboard, DashboardModal, DragDrop, ProgressBar } from '@uppy/vue'
+</script>
+
 <script>
 import Uppy from '@uppy/core'
-// import Tus from '@uppy/tus'
-import { Dashboard, DashboardModal, DragDrop, ProgressBar } from '@uppy/vue'
+import Tus from '@uppy/tus'
+import Webcam from '@uppy/webcam'
+import { defineComponent } from 'vue'
 
-export default {
-  name: 'App',
-  components: {
-    Dashboard,
-    DashboardModal,
-    DragDrop,
-    ProgressBar
-  },
+const { VITE_TUS_ENDPOINT: TUS_ENDPOINT } = import.meta.env
+
+export default defineComponent({
   computed: {
-    uppy: () => new Uppy({ id: 'uppy1', autoProceed: true, debug: true }),
-      // .use(Tus, { endpoint: 'https://tusd.tusdemo.net/files/' }),
-    uppy2: () => new Uppy({ id: 'uppy2', autoProceed: false, debug: true })
-      // .use(Tus, { endpoint: 'https://tusd.tusdemo.net/files/' }),
+    uppy: () =>
+      new Uppy({ id: 'uppy1', autoProceed: true, debug: true })
+        .use(Tus, {
+          endpoint: TUS_ENDPOINT,
+        })
+        .use(Webcam),
+    uppy2: () =>
+      new Uppy({ id: 'uppy2', autoProceed: false, debug: true })
+        .use(Tus, {
+          endpoint: TUS_ENDPOINT,
+        })
+        .use(Webcam),
   },
-  data () {
+  data() {
     return {
       open: false,
-      showInlineDashboard: false
+      showInlineDashboard: false,
     }
   },
   methods: {
-    handleClose() { this.open = false }
+    handleClose() {
+      this.open = false
+    },
   },
-  
-}
+})
 </script>
-<style src='@uppy/core/dist/style.css'></style> 
-<style src='@uppy/dashboard/dist/style.css'></style> 
-<style src='@uppy/drag-drop/dist/style.css'></style> 
-<style src='@uppy/progress-bar/dist/style.css'></style> 
 
+<style src="@uppy/core/dist/style.css"></style>
+<style src="@uppy/dashboard/dist/style.css"></style>
+<style src="@uppy/drag-drop/dist/style.css"></style>
+<style src="@uppy/progress-bar/dist/style.css"></style>
 
 <style>
 #app {

@@ -2,8 +2,9 @@
   "name": "@uppy-example/uppy-with-companion",
   "version": "0.0.0",
   "dependencies": {
-    "body-parser": "^1.18.2",
-    "express": "^4.16.2",
+    "@uppy/companion": "workspace:*",
+    "body-parser": "^1.20.3",
+    "express": "^4.19.2",
     "express-session": "^1.15.6",
     "light-server": "^2.4.0",
     "upload-server": "^1.1.6"

@@ -1,129 +1,31 @@
-const fs = require('fs')
 const express = require('express')
-const ms = require('ms')
-// @ts-ignore
-const Grant = require('grant').express()
-const merge = require('lodash.merge')
+const Grant = require('grant').default.express()
+const merge = require('lodash/merge')
 const cookieParser = require('cookie-parser')
 const interceptor = require('express-interceptor')
+const { randomUUID } = require('node:crypto')
 
 const grantConfig = require('./config/grant')()
 const providerManager = require('./server/provider')
 const controllers = require('./server/controllers')
 const s3 = require('./server/controllers/s3')
-const getS3Client = require('./server/s3-client')
 const url = require('./server/controllers/url')
-const emitter = require('./server/emitter')
+const googlePicker = require('./server/controllers/googlePicker')
+const createEmitter = require('./server/emitter')
 const redis = require('./server/redis')
-const { getURLBuilder } = require('./server/helpers/utils')
 const jobs = require('./server/jobs')
 const logger = require('./server/logger')
 const middlewares = require('./server/middlewares')
-const { ProviderApiError, ProviderAuthError } = require('./server/provider/error')
+const { getMaskableSecrets, defaultOptions, validateConfig } = require('./config/companion')
+const { ProviderApiError, ProviderUserError, ProviderAuthError } = require('./server/provider/error')
 const { getCredentialsOverrideMiddleware } = require('./server/provider/credentials')
+// @ts-ignore
+const { version } = require('../package.json')
+const { isOAuthProvider } = require('./server/provider/Provider')
 
-const defaultOptions = {
-  server: {
-    protocol: 'http',
-    path: '',
-  },
-  providerOptions: {
-    s3: {
-      acl: 'public-read',
-      endpoint: 'https://{service}.{region}.amazonaws.com',
-      conditions: [],
-      useAccelerateEndpoint: false,
-      getKey: (req, filename) => filename,
-      expires: ms('5 minutes') / 1000,
-    },
-  },
-  debug: true,
-  logClientVersion: true,
-  streamingUpload: false,
-}
 
-// make the errors available publicly for custom providers
-module.exports.errors = { ProviderApiError, ProviderAuthError }
-module.exports.socket = require('./server/socket')
-
-/**
- * Entry point into initializing the Companion app.
- *
- * @param {object} options
- * @returns {import('express').Express}
- */
-module.exports.app = (options = {}) => {
-  validateConfig(options)
-
-  options = merge({}, defaultOptions, options)
-  const providers = providerManager.getDefaultProviders()
-  const searchProviders = providerManager.getSearchProviders()
-  providerManager.addProviderOptions(options, grantConfig)
-
-  const { customProviders } = options
-  if (customProviders) {
-    providerManager.addCustomProviders(customProviders, providers, grantConfig)
-  }
-
-  // mask provider secrets from log messages
-  maskLogger(options)
-
-  // create singleton redis client
-  if (options.redisUrl) {
-    redis.client(merge({ url: options.redisUrl }, options.redisOptions || {}))
-  }
-  emitter(options.multipleInstances && options.redisUrl, options.redisPubSubScope)
-
-  const app = express()
-
-  if (options.metrics) {
-    app.use(middlewares.metrics())
-  }
-
-  app.use(cookieParser()) // server tokens are added to cookies
-
-  app.use(interceptGrantErrorResponse)
-  // override provider credentials at request time
-  app.use('/connect/:authProvider/:override?', getCredentialsOverrideMiddleware(providers, options))
-  app.use(Grant(grantConfig))
-
-  app.use((req, res, next) => {
-    if (options.sendSelfEndpoint) {
-      const { protocol } = options.server
-      res.header('i-am', `${protocol}://${options.sendSelfEndpoint}`)
-    }
-    next()
-  })
-
-  app.use(middlewares.cors(options))
-
-  // add uppy options to the request object so it can be accessed by subsequent handlers.
-  app.use('*', getOptionsMiddleware(options))
-  app.use('/s3', s3(options.providerOptions.s3))
-  app.use('/url', url())
-
-  app.post('/:providerName/preauth', middlewares.hasSessionAndProvider, controllers.preauth)
-  app.get('/:providerName/connect', middlewares.hasSessionAndProvider, controllers.connect)
-  app.get('/:providerName/redirect', middlewares.hasSessionAndProvider, controllers.redirect)
-  app.get('/:providerName/callback', middlewares.hasSessionAndProvider, controllers.callback)
-  app.post('/:providerName/deauthorization/callback', middlewares.hasSessionAndProvider, controllers.deauthorizationCallback)
-  app.get('/:providerName/logout', middlewares.hasSessionAndProvider, middlewares.gentleVerifyToken, controllers.logout)
-  app.get('/:providerName/send-token', middlewares.hasSessionAndProvider, middlewares.verifyToken, controllers.sendToken)
-  app.get('/:providerName/list/:id?', middlewares.hasSessionAndProvider, middlewares.verifyToken, controllers.list)
-  app.post('/:providerName/get/:id', middlewares.hasSessionAndProvider, middlewares.verifyToken, controllers.get)
-  app.get('/:providerName/thumbnail/:id', middlewares.hasSessionAndProvider, middlewares.cookieAuthToken, middlewares.verifyToken, controllers.thumbnail)
-  // @ts-ignore Type instantiation is excessively deep and possibly infinite.
-  app.get('/search/:searchProviderName/list', middlewares.hasSearchQuery, middlewares.loadSearchProviderToken, controllers.list)
-  app.post('/search/:searchProviderName/get/:id', middlewares.loadSearchProviderToken, controllers.get)
-
-  app.param('providerName', providerManager.getProviderMiddleware(providers, true))
-  app.param('searchProviderName', providerManager.getProviderMiddleware(searchProviders))
-
-  if (app.get('env') !== 'test') {
-    jobs.startCleanUpJob(options.filePath)
-  }
-
-  return app
+function setLoggerProcessName({ loggerProcessName }) {
+  if (loggerProcessName != null) logger.setProcessName(loggerProcessName)
 }
 
 // intercepts grantJS' default response error when something goes
@@ -152,106 +54,139 @@ const interceptGrantErrorResponse = interceptor((req, res) => {
   }
 })
 
-/**
- *
- * @param {object} options
- */
-const getOptionsMiddleware = (options) => {
-  /**
-   * @param {object} req
-   * @param {object} res
-   * @param {Function} next
-   */
-  const middleware = (req, res, next) => {
-    const versionFromQuery = req.query.uppyVersions ? decodeURIComponent(req.query.uppyVersions) : null
-    req.companion = {
-      options,
-      s3Client: getS3Client(options),
-      authToken: req.header('uppy-auth-token') || req.query.uppyAuthToken,
-      clientVersion: req.header('uppy-versions') || versionFromQuery || '1.0.0',
-      buildURL: getURLBuilder(options),
-    }
+// make the errors available publicly for custom providers
+module.exports.errors = { ProviderApiError, ProviderUserError, ProviderAuthError }
+module.exports.socket = require('./server/socket')
 
-    if (options.logClientVersion) {
-      logger.info(`uppy client version ${req.companion.clientVersion}`, 'companion.client.version')
+module.exports.setLoggerProcessName = setLoggerProcessName
+
+/**
+ * Entry point into initializing the Companion app.
+ *
+ * @param {object} optionsArg
+ * @returns {{ app: import('express').Express, emitter: any }}}
+ */
+module.exports.app = (optionsArg = {}) => {
+  setLoggerProcessName(optionsArg)
+
+  validateConfig(optionsArg)
+
+  const options = merge({}, defaultOptions, optionsArg)
+
+  const providers = providerManager.getDefaultProviders()
+
+  const { customProviders } = options
+  if (customProviders) {
+    providerManager.addCustomProviders(customProviders, providers, grantConfig)
+  }
+
+  const getOauthProvider = (providerName) => providers[providerName]?.oauthProvider
+
+  providerManager.addProviderOptions(options, grantConfig, getOauthProvider)
+
+  // mask provider secrets from log messages
+  logger.setMaskables(getMaskableSecrets(options))
+
+  // create singleton redis client if corresponding options are set
+  const redisClient = redis.client(options)
+  const emitter = createEmitter(redisClient, options.redisPubSubScope)
+
+  const app = express()
+
+  if (options.metrics) {
+    app.use(middlewares.metrics({ path: options.server.path }))
+  }
+
+  app.use(cookieParser()) // server tokens are added to cookies
+
+  app.use(interceptGrantErrorResponse)
+
+  // override provider credentials at request time
+  // Making `POST` request to the `/connect/:provider/:override?` route requires a form body parser middleware:
+  // See https://github.com/simov/grant#dynamic-http
+  app.use('/connect/:oauthProvider/:override?', express.urlencoded({ extended: false }), getCredentialsOverrideMiddleware(providers, options))
+  app.use(Grant(grantConfig))
+
+  app.use((req, res, next) => {
+    if (options.sendSelfEndpoint) {
+      const { protocol } = options.server
+      res.header('i-am', `${protocol}://${options.sendSelfEndpoint}`)
     }
     next()
-  }
-
-  return middleware
-}
-
-/**
- * Informs the logger about all provider secrets that should be masked
- * if they are found in a log message
- *
- * @param {object} companionOptions
- */
-const maskLogger = (companionOptions) => {
-  const secrets = []
-  const { providerOptions, customProviders } = companionOptions
-  Object.keys(providerOptions).forEach((provider) => {
-    if (providerOptions[provider].secret) {
-      secrets.push(providerOptions[provider].secret)
-    }
   })
 
-  if (customProviders) {
-    Object.keys(customProviders).forEach((provider) => {
-      if (customProviders[provider].config && customProviders[provider].config.secret) {
-        secrets.push(customProviders[provider].config.secret)
+  app.use(middlewares.cors(options))
+
+  // add uppy options to the request object so it can be accessed by subsequent handlers.
+  app.use('*', middlewares.getCompanionMiddleware(options))
+  app.use('/s3', s3(options.s3))
+  if (options.enableUrlEndpoint) app.use('/url', url())
+  if (options.enableGooglePickerEndpoint) app.use('/google-picker', googlePicker())
+
+  app.post('/:providerName/preauth', express.json(), express.urlencoded({ extended: false }), middlewares.hasSessionAndProvider, middlewares.hasBody, middlewares.hasOAuthProvider, controllers.preauth)
+  app.get('/:providerName/connect', middlewares.hasSessionAndProvider, middlewares.hasOAuthProvider, controllers.connect)
+  app.get('/:providerName/redirect', middlewares.hasSessionAndProvider, middlewares.hasOAuthProvider, controllers.redirect)
+  app.get('/:providerName/callback', middlewares.hasSessionAndProvider, middlewares.hasOAuthProvider, controllers.callback)
+  app.post('/:providerName/refresh-token', middlewares.hasSessionAndProvider, middlewares.hasOAuthProvider, middlewares.verifyToken, controllers.refreshToken)
+  app.post('/:providerName/deauthorization/callback', express.json(), middlewares.hasSessionAndProvider, middlewares.hasBody, middlewares.hasOAuthProvider, controllers.deauthorizationCallback)
+  app.get('/:providerName/logout', middlewares.hasSessionAndProvider, middlewares.hasOAuthProvider, middlewares.gentleVerifyToken, controllers.logout)
+  app.get('/:providerName/send-token', middlewares.hasSessionAndProvider, middlewares.hasOAuthProvider, middlewares.verifyToken, controllers.sendToken)
+
+  app.post('/:providerName/simple-auth', express.json(), middlewares.hasSessionAndProvider, middlewares.hasBody, middlewares.hasSimpleAuthProvider, controllers.simpleAuth)
+
+  app.get('/:providerName/list/:id?', middlewares.hasSessionAndProvider, middlewares.verifyToken, controllers.list)
+  // backwards compat:
+  app.get('/search/:providerName/list', middlewares.hasSessionAndProvider, middlewares.verifyToken, controllers.list)
+
+  app.post('/:providerName/get/:id', express.json(), middlewares.hasSessionAndProvider, middlewares.verifyToken, controllers.get)
+  // backwards compat:
+  app.post('/search/:providerName/get/:id', express.json(), middlewares.hasSessionAndProvider, middlewares.verifyToken, controllers.get)
+
+  app.get('/:providerName/thumbnail/:id', middlewares.hasSessionAndProvider, middlewares.hasOAuthProvider, middlewares.cookieAuthToken, middlewares.verifyToken, controllers.thumbnail)
+
+  // Used for testing dynamic credentials only, normally this would run on a separate server.
+  if (options.testDynamicOauthCredentials) {
+    app.post('/:providerName/test-dynamic-oauth-credentials', (req, res) => {
+      if (req.query.secret !== options.testDynamicOauthCredentialsSecret) throw new Error('Invalid secret')
+      const { providerName } = req.params
+      logger.info(`Returning dynamic OAuth2 credentials for ${providerName}`)
+      // for simplicity, we just return the normal credentials for the provider, but in a real-world scenario,
+      // we would query based on parameters
+      const { key, secret } = options.providerOptions[providerName] ?? { __proto__: null }
+
+      function getRedirectUri() {
+        const oauthProvider = getOauthProvider(providerName)
+        if (!isOAuthProvider(oauthProvider)) return undefined
+        return grantConfig[oauthProvider]?.redirect_uri
       }
+
+      res.send({
+        credentials: {
+          key,
+          secret,
+          redirect_uri: getRedirectUri(),
+          origins: ['http://localhost:5173'],
+        },
+      })
     })
   }
 
-  logger.setMaskables(secrets)
-}
+  app.param('providerName', providerManager.getProviderMiddleware(providers, grantConfig))
 
-/**
- * validates that the mandatory companion options are set.
- * If it is invalid, it will console an error of unset options and exits the process.
- * If it is valid, nothing happens.
- *
- * @param {object} companionOptions
- */
-const validateConfig = (companionOptions) => {
-  const mandatoryOptions = ['secret', 'filePath', 'server.host']
-  /** @type {string[]} */
-  const unspecified = []
+  if (app.get('env') !== 'test') {
+    jobs.startCleanUpJob(options.filePath)
+  }
 
-  mandatoryOptions.forEach((i) => {
-    const value = i.split('.').reduce((prev, curr) => (prev ? prev[curr] : undefined), companionOptions)
+  const processId = randomUUID()
 
-    if (!value) unspecified.push(`"${i}"`)
+  jobs.startPeriodicPingJob({
+    urls: options.periodicPingUrls,
+    interval: options.periodicPingInterval,
+    count: options.periodicPingCount,
+    staticPayload: options.periodicPingStaticPayload,
+    version,
+    processId,
   })
 
-  // vaidate that all required config is specified
-  if (unspecified.length) {
-    const messagePrefix = 'Please specify the following options to use companion:'
-    throw new Error(`${messagePrefix}\n${unspecified.join(',\n')}`)
-  }
-
-  // validate that specified filePath is writeable/readable.
-  try {
-    // @ts-ignore
-    fs.accessSync(`${companionOptions.filePath}`, fs.R_OK | fs.W_OK) // eslint-disable-line no-bitwise
-  } catch (err) {
-    throw new Error(
-      `No access to "${companionOptions.filePath}". Please ensure the directory exists and with read/write permissions.`,
-    )
-  }
-
-  const { providerOptions } = companionOptions
-  if (providerOptions) {
-    const deprecatedOptions = { microsoft: 'onedrive', google: 'drive' }
-    Object.keys(deprecatedOptions).forEach((deprected) => {
-      if (providerOptions[deprected]) {
-        throw new Error(`The Provider option "${deprected}" is no longer supported. Please use the option "${deprecatedOptions[deprected]}" instead.`)
-      }
-    })
-  }
-
-  if (companionOptions.uploadUrls == null || companionOptions.uploadUrls.length === 0) {
-    logger.warn('Running without uploadUrls specified is a security risk if running in production', 'startup.uploadUrls')
-  }
+  return { app, emitter }
 }

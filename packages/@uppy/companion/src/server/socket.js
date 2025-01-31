@@ -1,4 +1,4 @@
-const SocketServer = require('ws').Server
+const SocketServer = require('ws').WebSocketServer
 const { jsonStringify } = require('./helpers/utils')
 const emitter = require('./emitter')
 const redis = require('./redis')
@@ -18,7 +18,6 @@ module.exports = (server) => {
   // or when connection fails while an upload is on-going and,
   // client attempts to reconnect.
   wss.on('connection', (ws, req) => {
-    // @ts-ignore
     const fullPath = req.url
     // the token identifies which ongoing upload's progress, the socket
     // connection wishes to listen to.
@@ -29,26 +28,35 @@ module.exports = (server) => {
      *
      * @param {{action: string, payload: object}} data
      */
-    function sendProgress (data) {
+    function send (data) {
       ws.send(jsonStringify(data), (err) => {
-        if (err) logger.error(err, 'socket.progress.error', shortenToken(token))
+        if (err) logger.error(err, 'socket.redis.error', shortenToken(token))
       })
     }
 
     // if the redisClient is available, then we attempt to check the storage
-    // if we have any already stored progress data on the upload.
+    // if we have any already stored state on the upload.
     if (redisClient) {
-      redisClient.get(`${STORAGE_PREFIX}:${token}`, (err, data) => {
-        if (err) logger.error(err, 'socket.redis.error', shortenToken(token))
+      redisClient.get(`${STORAGE_PREFIX}:${token}`).then((data) => {
         if (data) {
           const dataObj = JSON.parse(data.toString())
-          if (dataObj.action) sendProgress(dataObj)
+          if (dataObj.action) send(dataObj)
         }
-      })
+      }).catch((err) => logger.error(err, 'socket.redis.error', shortenToken(token)))
     }
-
+ 
     emitter().emit(`connection:${token}`)
-    emitter().on(token, sendProgress)
+    emitter().on(token, send)
+
+    ws.on('error', (err) => {
+      // https://github.com/websockets/ws/issues/1543
+      // https://github.com/websockets/ws/blob/b73b11828d166e9692a9bffe9c01a7e93bab04a8/test/receiver.test.js#L936
+      if (err?.name === 'RangeError' && 'code' in err && err.code === 'WS_ERR_UNSUPPORTED_MESSAGE_LENGTH') {
+        logger.error('WebSocket message too large', 'websocket.error', shortenToken(token))
+      } else {
+        logger.error(err, 'websocket.error', shortenToken(token))
+      }
+    })
 
     ws.on('message', (jsonData) => {
       const data = JSON.parse(jsonData.toString())
@@ -59,7 +67,7 @@ module.exports = (server) => {
     })
 
     ws.on('close', () => {
-      emitter().removeListener(token, sendProgress)
+      emitter().removeListener(token, send)
     })
   })
 }

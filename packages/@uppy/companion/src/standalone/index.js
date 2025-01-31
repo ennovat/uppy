@@ -1,25 +1,39 @@
 const express = require('express')
-const qs = require('querystring')
+const qs = require('node:querystring')
+const { randomUUID } = require('node:crypto')
 const helmet = require('helmet')
 const morgan = require('morgan')
-const bodyParser = require('body-parser')
-const { URL } = require('url')
-const merge = require('lodash.merge')
+const { URL } = require('node:url')
 const session = require('express-session')
-const addRequestId = require('express-request-id')()
+const RedisStore = require('connect-redis').default
+
 const logger = require('../server/logger')
 const redis = require('../server/redis')
 const companion = require('../companion')
-const helper = require('./helper')
-const middlewares = require('../server/middlewares')
+const { getCompanionOptions, generateSecret, buildHelpfulStartupMessage } = require('./helper')
 
 /**
  * Configures an Express app for running Companion standalone
  *
  * @returns {object}
  */
-module.exports = function server (inputCompanionOptions = {}) {
+module.exports = function server(inputCompanionOptions) {
+  const companionOptions = getCompanionOptions(inputCompanionOptions)
+
+  companion.setLoggerProcessName(companionOptions)
+
+  if (!companionOptions.secret) companionOptions.secret = generateSecret('secret')
+  if (!companionOptions.preAuthSecret) companionOptions.preAuthSecret = generateSecret('preAuthSecret')
+
   const app = express()
+
+  const router = express.Router()
+
+  if (companionOptions.server.path) {
+    app.use(companionOptions.server.path, router)
+  } else {
+    app.use(router)
+  }
 
   // Query string keys whose values should not end up in logging output.
   const sensitiveKeys = new Set(['access_token', 'uppyAuthToken'])
@@ -38,7 +52,7 @@ module.exports = function server (inputCompanionOptions = {}) {
    *   censored: boolean
    * }}
    */
-  function censorQuery (rawQuery) {
+  function censorQuery(rawQuery) {
     /** @type {Record<string, any>} */
     const query = {}
     let censored = false
@@ -57,9 +71,15 @@ module.exports = function server (inputCompanionOptions = {}) {
     return { query, censored }
   }
 
-  app.use(addRequestId)
+  router.use((request, response, next) => {
+    const headerName = 'X-Request-Id'
+		const oldValue = request.get(headerName);
+    response.set(headerName, oldValue ?? randomUUID());
+
+		next();
+	})
   // log server requests.
-  app.use(morgan('combined'))
+  router.use(morgan('combined'))
   morgan.token('url', (req) => {
     const { query, censored } = censorQuery(req.query)
     return censored ? `${req.path}?${qs.stringify(query)}` : req.originalUrl || req.url
@@ -78,50 +98,26 @@ module.exports = function server (inputCompanionOptions = {}) {
       const { query, censored } = censorQuery(rawQuery)
       return censored ? `${parsed.href.split('?')[0]}?${qs.stringify(query)}` : parsed.href
     }
+    return undefined
   })
 
-  // for server metrics tracking.
-  // make app metrics available at '/metrics'.
-  // TODO for the next major version: use instead companion option "metrics": true and remove this code
-  // eslint-disable-next-line max-len
-  // See discussion: https://github.com/transloadit/uppy/pull/2854/files/64be97205e4012818abfcc8b0b8b7fe09de91729#diff-68f5e3eb307c1c9d1fd02224fd7888e2f74718744e1b6e35d929fcab1cc50ed1
-  if (process.env.COMPANION_HIDE_METRICS !== 'true') {
-    app.use(middlewares.metrics())
-  }
-
-  app.use(bodyParser.json())
-  app.use(bodyParser.urlencoded({ extended: false }))
-
   // Use helmet to secure Express headers
-  app.use(helmet.frameguard())
-  app.use(helmet.xssFilter())
-  app.use(helmet.noSniff())
-  app.use(helmet.ieNoOpen())
+  router.use(helmet.frameguard())
+  router.use(helmet.xssFilter())
+  router.use(helmet.noSniff())
+  router.use(helmet.ieNoOpen())
+
   app.disable('x-powered-by')
 
-  let corsOrigins
-  if (process.env.COMPANION_CLIENT_ORIGINS) {
-    corsOrigins = process.env.COMPANION_CLIENT_ORIGINS
-      .split(',')
-      .map((url) => (helper.hasProtocol(url) ? url : `${process.env.COMPANION_PROTOCOL || 'http'}://${url}`))
-  } else if (process.env.COMPANION_CLIENT_ORIGINS_REGEX) {
-    corsOrigins = new RegExp(process.env.COMPANION_CLIENT_ORIGINS_REGEX)
-  }
-
-  const moreCompanionOptions = { ...inputCompanionOptions, corsOrigins }
-  const companionOptions = helper.getCompanionOptions(moreCompanionOptions)
   const sessionOptions = {
     secret: companionOptions.secret,
     resave: true,
     saveUninitialized: true,
   }
 
-  if (companionOptions.redisUrl) {
-    const RedisStore = require('connect-redis')(session)
-    const redisClient = redis.client(
-      merge({ url: companionOptions.redisUrl }, companionOptions.redisOptions),
-    )
-    sessionOptions.store = new RedisStore({ client: redisClient })
+  const redisClient = redis.client(companionOptions)
+  if (redisClient) {
+    sessionOptions.store = new RedisStore({ client: redisClient, prefix: process.env.COMPANION_REDIS_EXPRESS_SESSION_PREFIX || 'companion-session:' })
   }
 
   if (process.env.COMPANION_COOKIE_DOMAIN) {
@@ -131,32 +127,25 @@ module.exports = function server (inputCompanionOptions = {}) {
     }
   }
 
-  app.use(session(sessionOptions))
+  // Session is used for grant redirects, so that we don't need to expose secret tokens in URLs
+  // See https://github.com/transloadit/uppy/pull/1668
+  // https://github.com/transloadit/uppy/issues/3538#issuecomment-1069232909
+  // https://github.com/simov/grant#callback-session
+  router.use(session(sessionOptions))
 
   // Routes
   if (process.env.COMPANION_HIDE_WELCOME !== 'true') {
-    app.get('/', (req, res) => {
+    router.get('/', (req, res) => {
       res.setHeader('Content-Type', 'text/plain')
-      res.send(helper.buildHelpfulStartupMessage(companionOptions))
+      res.send(buildHelpfulStartupMessage(companionOptions))
     })
   }
 
-  let companionApp
-  try {
-    // initialize companion
-    companionApp = companion.app(companionOptions)
-  } catch (error) {
-    // eslint-disable-next-line no-console
-    console.error('\x1b[31m', error.message, '\x1b[0m')
-    process.exit(1)
-  }
+  // initialize companion
+  const { app: companionApp } = companion.app(companionOptions)
 
   // add companion to server middleware
-  if (process.env.COMPANION_PATH) {
-    app.use(process.env.COMPANION_PATH, companionApp)
-  } else {
-    app.use(companionApp)
-  }
+  router.use(companionApp)
 
   // WARNING: This route is added in order to validate your app with OneDrive.
   // Only set COMPANION_ONEDRIVE_DOMAIN_VALIDATION if you are sure that you are setting the
@@ -164,7 +153,7 @@ module.exports = function server (inputCompanionOptions = {}) {
   // that you might have mixed the values for COMPANION_ONEDRIVE_KEY and COMPANION_ONEDRIVE_SECRET,
   // please DO NOT set any value for COMPANION_ONEDRIVE_DOMAIN_VALIDATION
   if (process.env.COMPANION_ONEDRIVE_DOMAIN_VALIDATION === 'true' && process.env.COMPANION_ONEDRIVE_KEY) {
-    app.get('/.well-known/microsoft-identity-association.json', (req, res) => {
+    router.get('/.well-known/microsoft-identity-association.json', (req, res) => {
       const content = JSON.stringify({
         associatedApplications: [
           { applicationId: process.env.COMPANION_ONEDRIVE_KEY },
@@ -184,21 +173,19 @@ module.exports = function server (inputCompanionOptions = {}) {
     return res.status(404).json({ message: 'Not Found' })
   })
 
-  // @ts-ignore
   app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
-    const logStackTrace = true
     if (app.get('env') === 'production') {
       // if the error is a URIError from the requested URL we only log the error message
       // to avoid uneccessary error alerts
-      if (err.status === 400 && err instanceof URIError) {
+      if (err.status === 400 && err.name === 'URIError') {
         logger.error(err.message, 'root.error', req.id)
       } else {
-        logger.error(err, 'root.error', req.id, logStackTrace)
+        logger.error(err, 'root.error', req.id)
       }
-      res.status(err.status || 500).json({ message: 'Something went wrong', requestId: req.id })
+      res.status(500).json({ message: 'Something went wrong', requestId: req.id })
     } else {
-      logger.error(err, 'root.error', req.id, logStackTrace)
-      res.status(err.status || 500).json({ message: err.message, error: err, requestId: req.id })
+      logger.error(err, 'root.error', req.id)
+      res.status(500).json({ message: err.message, error: err, requestId: req.id })
     }
   })
 

@@ -1,5 +1,3 @@
-/* global jest:false, test:false, describe:false, expect:false */
-
 const { cors } = require('../../src/server/middlewares')
 
 function testWithMock ({ corsOptions, get = () => {}, origin = 'https://localhost:1234' } = {}) {
@@ -41,8 +39,8 @@ describe('cors', () => {
       ['Vary', 'Origin'],
       ['Access-Control-Allow-Credentials', 'true'],
       ['Access-Control-Allow-Methods', 'PATCH,OPTIONS,POST,GET,DELETE'],
-      ['Access-Control-Allow-Headers', 'test-allow-header,uppy-auth-token,uppy-versions,uppy-credentials-params,authorization,origin,content-type,accept'],
-      ['Access-Control-Expose-Headers', 'test,access-control-allow-headers,i-am'],
+      ['Access-Control-Allow-Headers', 'test-allow-header,uppy-auth-token,uppy-credentials-params,authorization,origin,content-type,accept'],
+      ['Access-Control-Expose-Headers', 'test,i-am'],
       ['Content-Length', '0'],
     ])
     // expect(next).toHaveBeenCalled()
@@ -55,8 +53,7 @@ describe('cors', () => {
       ['Vary', 'Origin'],
       ['Access-Control-Allow-Credentials', 'true'],
       ['Access-Control-Allow-Methods', 'GET,POST,OPTIONS,DELETE'],
-      ['Access-Control-Allow-Headers', 'uppy-auth-token,uppy-versions,uppy-credentials-params,authorization,origin,content-type,accept'],
-      ['Access-Control-Expose-Headers', 'access-control-allow-headers'],
+      ['Access-Control-Allow-Headers', 'uppy-auth-token,uppy-credentials-params,authorization,origin,content-type,accept'],
       ['Content-Length', '0'],
     ])
   })
@@ -72,8 +69,7 @@ describe('cors', () => {
       ['Vary', 'Origin'],
       ['Access-Control-Allow-Credentials', 'true'],
       ['Access-Control-Allow-Methods', 'GET,POST,OPTIONS,DELETE'],
-      ['Access-Control-Allow-Headers', 'uppy-auth-token,uppy-versions,uppy-credentials-params,authorization,origin,content-type,accept'],
-      ['Access-Control-Expose-Headers', 'access-control-allow-headers'],
+      ['Access-Control-Allow-Headers', 'uppy-auth-token,uppy-credentials-params,authorization,origin,content-type,accept'],
       ['Content-Length', '0'],
     ])
   })
@@ -85,8 +81,7 @@ describe('cors', () => {
       ['Vary', 'Origin'],
       ['Access-Control-Allow-Credentials', 'true'],
       ['Access-Control-Allow-Methods', 'GET,POST,OPTIONS,DELETE'],
-      ['Access-Control-Allow-Headers', 'uppy-auth-token,uppy-versions,uppy-credentials-params,authorization,origin,content-type,accept'],
-      ['Access-Control-Expose-Headers', 'access-control-allow-headers'],
+      ['Access-Control-Allow-Headers', 'uppy-auth-token,uppy-credentials-params,authorization,origin,content-type,accept'],
       ['Content-Length', '0'],
     ])
   })

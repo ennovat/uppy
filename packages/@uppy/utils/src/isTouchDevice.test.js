@@ -1,23 +1,24 @@
-const isTouchDevice = require('./isTouchDevice')
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import isTouchDevice from './isTouchDevice.ts'
 
 describe('isTouchDevice', () => {
-  const RealTouchStart = global.window.ontouchstart
-  const RealMaxTouchPoints = global.navigator.maxTouchPoints
+  const RealTouchStart = globalThis.window.ontouchstart
+  const RealMaxTouchPoints = globalThis.navigator.maxTouchPoints
 
   beforeEach(() => {
-    global.window.ontouchstart = true
-    global.navigator.maxTouchPoints = 1
+    globalThis.window.ontouchstart = true
+    globalThis.navigator.maxTouchPoints = 1
   })
 
   afterEach(() => {
-    global.navigator.maxTouchPoints = RealMaxTouchPoints
-    global.window.ontouchstart = RealTouchStart
+    globalThis.navigator.maxTouchPoints = RealMaxTouchPoints
+    globalThis.window.ontouchstart = RealTouchStart
   })
 
-  xit("should return true if it's a touch device", () => {
+  it.skip("should return true if it's a touch device", () => {
     expect(isTouchDevice()).toEqual(true)
-    delete global.window.ontouchstart
-    global.navigator.maxTouchPoints = false
+    delete globalThis.window.ontouchstart
+    globalThis.navigator.maxTouchPoints = false
     expect(isTouchDevice()).toEqual(false)
   })
 })

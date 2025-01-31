@@ -1,22 +1,40 @@
 {
   "name": "@uppy/vue",
-  "version": "0.4.3",
+  "version": "2.1.1",
+  "license": "MIT",
+  "type": "module",
   "main": "lib/index.js",
-  "types": "types/index.d.ts",
   "dependencies": {
+    "shallow-equal": "^3.0.0"
+  },
+  "devDependencies": {
+    "vue": "^3.4.21"
+  },
+  "peerDependencies": {
+    "@uppy/core": "workspace:^",
     "@uppy/dashboard": "workspace:^",
     "@uppy/drag-drop": "workspace:^",
     "@uppy/file-input": "workspace:^",
     "@uppy/progress-bar": "workspace:^",
     "@uppy/status-bar": "workspace:^",
-    "shallow-equal": "^1.2.1"
+    "vue": ">=3.0.0"
   },
-  "devDependencies": {
-    "vue": "^2.6.12"
-  },
-  "peerDependencies": {
-    "@uppy/core": "workspace:^",
-    "vue": ">=2.6.11"
+  "peerDependenciesMeta": {
+    "@uppy/dashboard": {
+      "optional": true
+    },
+    "@uppy/drag-drop": {
+      "optional": true
+    },
+    "@uppy/file-input": {
+      "optional": true
+    },
+    "@uppy/progress-bar": {
+      "optional": true
+    },
+    "@uppy/status-bar": {
+      "optional": true
+    }
   },
   "publishConfig": {
     "access": "public"

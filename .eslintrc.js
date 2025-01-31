@@ -8,7 +8,7 @@ const svgPresentationAttributes = [
 
 module.exports = {
   root: true,
-  extends: ['transloadit'],
+  extends: ['transloadit', 'prettier'],
   env: {
     es6: true,
     jest: true,
@@ -32,10 +32,13 @@ module.exports = {
     // extra:
     'compat',
     'jsdoc',
+    'no-only-tests',
+    'unicorn',
   ],
   parser: '@babel/eslint-parser',
   parserOptions: {
-    ecmaVersion: 2020,
+    sourceType: 'script',
+    ecmaVersion: 2022,
     ecmaFeatures: {
       jsx: true,
     },
@@ -46,10 +49,16 @@ module.exports = {
     'object-shorthand': ['error', 'always'],
     'strict': 'off',
     'key-spacing': 'off',
+    'max-classes-per-file': ['error', 2],
+    'react/no-unknown-property': ['error', {
+      ignore: svgPresentationAttributes,
+    }],
+
+    'import/no-unresolved': 'off',
 
     // rules we want to enforce
     'array-callback-return': 'error',
-    'implicit-arrow-linebreak': 'error',
+    'func-names': 'error',
     'import/no-dynamic-require': 'error',
     'import/no-extraneous-dependencies': 'error',
     'max-len': 'error',
@@ -68,38 +77,23 @@ module.exports = {
     'node/handle-callback-err': 'error',
     'prefer-destructuring': 'error',
     'prefer-spread': 'error',
+    'unicorn/prefer-node-protocol': 'error',
 
-    // transloadit rules we would like to enforce in the future
-    // but will require separate PRs to gradually get there
-    // and so the meantime: just warn
-    'class-methods-use-this': ['warn'],
-    'consistent-return': ['warn'],
-    'default-case': ['warn'],
-    'global-require': ['warn'],
-    'import/no-unresolved': ['warn'],
-    'import/order': ['warn'],
-    'max-classes-per-file': ['warn'],
-    'no-mixed-operators': ['warn'],
-    'no-param-reassign': ['warn'],
-    'no-redeclare': ['warn'],
-    'no-shadow': ['warn'],
-    'no-use-before-define': ['warn', { 'functions': false }],
-    'radix': ['warn'],
     'react/button-has-type': 'error',
-    'react/destructuring-assignment': ['warn'],
     'react/forbid-prop-types': 'error',
-    'react/jsx-props-no-spreading': ['warn'],
     'react/no-access-state-in-setstate': 'error',
     'react/no-array-index-key': 'error',
     'react/no-deprecated': 'error',
     'react/no-this-in-sfc': 'error',
     'react/no-will-update-set-state': 'error',
     'react/prefer-stateless-function': 'error',
-    'react/sort-comp': 'error',
-    'react/style-prop-object': 'error',
-    'react/no-unknown-property': ['error', {
-      ignore: svgPresentationAttributes,
+    'react/require-default-props': ['error', {
+      forbidDefaultForRequired: true,
+      functions: 'ignore',
     }],
+    'react/sort-comp': 'error',
+    'react/static-property-placement': 'off',
+    'react/style-prop-object': 'error',
 
     // accessibility
     'jsx-a11y/alt-text': 'error',
@@ -119,11 +113,10 @@ module.exports = {
     // jsdoc
     'jsdoc/check-alignment': 'error',
     'jsdoc/check-examples': 'off', // cannot yet be supported for ESLint 8, see https://github.com/eslint/eslint/issues/14745
-    'jsdoc/check-param-names': ['warn'],
-    'jsdoc/check-syntax': ['warn'],
-    'jsdoc/check-tag-names': 'error',
+    'jsdoc/check-param-names': 'error',
+    'jsdoc/check-syntax': 'error',
+    'jsdoc/check-tag-names': ['error', { jsxTags: true }],
     'jsdoc/check-types': 'error',
-    'jsdoc/newline-after-description': 'error',
     'jsdoc/valid-types': 'error',
     'jsdoc/check-indentation': ['off'],
   },
@@ -146,17 +139,181 @@ module.exports = {
 
   overrides: [
     {
+      files: [
+        '*.jsx',
+        '*.tsx',
+        'packages/@uppy/react-native/**/*.js',
+      ],
+      parser: 'espree',
+      parserOptions: {
+        sourceType: 'module',
+        ecmaFeatures: {
+          jsx: true,
+        },
+      },
+      rules: {
+        'no-restricted-globals': [
+          'error',
+          {
+            name: '__filename',
+            message: 'Use import.meta.url instead',
+          },
+          {
+            name: '__dirname',
+            message: 'Not available in ESM',
+          },
+          {
+            name: 'exports',
+            message: 'Not available in ESM',
+          },
+          {
+            name: 'module',
+            message: 'Not available in ESM',
+          },
+          {
+            name: 'require',
+            message: 'Use import instead',
+          },
+          {
+            name: 'JSX',
+            message: 'Use h.JSX.Element, ComponentChild, or ComponentChildren from Preact',
+          },
+          {
+            name: 'React',
+            message: 'Import the value instead of relying on global.React.',
+          },
+        ],
+        'import/extensions': ['error', 'ignorePackages'],
+      },
+    },
+    {
+      files: [
+        '*.mjs',
+        'e2e/clients/**/*.js',
+        'examples/aws-companion/*.js',
+        'examples/aws-php/*.js',
+        'examples/bundled/*.js',
+        'examples/custom-provider/client/*.js',
+        'examples/digitalocean-spaces/*.js',
+        'examples/multiple-instances/*.js',
+        'examples/node-xhr/*.js',
+        'examples/php-xhr/*.js',
+        'examples/python-xhr/*.js',
+        'examples/react-example/*.js',
+        'examples/redux/*.js',
+        'examples/transloadit/*.js',
+        'examples/transloadit-markdown-bin/*.js',
+        'examples/xhr-bundle/*.js',
+        'private/dev/*.js',
+        'private/release/*.js',
+        'private/remark-lint-uppy/*.js',
+        'packages/@uppy/!(companion|react-native)/**/*.js',
+      ],
+      parser: 'espree',
+      parserOptions: {
+        sourceType: 'module',
+        ecmaFeatures: {
+          jsx: false,
+        },
+      },
+      rules: {
+        'import/named': 'off', // Disabled because that rule tries and fails to parse JSX dependencies.
+        'import/no-named-as-default': 'off', // Disabled because that rule tries and fails to parse JSX dependencies.
+        'import/no-named-as-default-member': 'off', // Disabled because that rule tries and fails to parse JSX dependencies.
+        'no-restricted-globals': [
+          'error',
+          {
+            name: '__filename',
+            message: 'Use import.meta.url instead',
+          },
+          {
+            name: '__dirname',
+            message: 'Not available in ESM',
+          },
+          {
+            name: 'exports',
+            message: 'Not available in ESM',
+          },
+          {
+            name: 'module',
+            message: 'Not available in ESM',
+          },
+          {
+            name: 'require',
+            message: 'Use import instead',
+          },
+          {
+            name: 'JSX',
+            message: 'Use h.JSX.Element, ComponentChild, or ComponentChildren from Preact',
+          },
+          {
+            name: 'React',
+            message: 'Import the value instead of relying on global.React.',
+          },
+        ],
+        'import/extensions': ['error', 'ignorePackages'],
+      },
+    },
+    {
+      files: ['packages/uppy/*.mjs'],
+      rules: {
+        'import/first': 'off',
+        'import/newline-after-import': 'off',
+        'import/no-extraneous-dependencies': ['error', {
+          devDependencies: true,
+        }],
+      },
+    },
+    {
+      files: [
+        'packages/@uppy/*/types/*.d.ts',
+      ],
+      rules : {
+        'import/no-unresolved': 'off',
+        'max-classes-per-file': 'off',
+        'no-use-before-define': 'off',
+      },
+    },
+    {
+      files: [
+        'packages/@uppy/dashboard/src/components/**/*.jsx',
+      ],
+      rules: {
+        'react/destructuring-assignment': 'off',
+      },
+    },
+    {
+      files: [
+        // Those need looser rules, and cannot be made part of the stricter rules above.
+        // TODO: update those to more modern code when switch to ESM is complete
+        'examples/react-native-expo/*.js',
+        'examples/svelte-example/**/*.js',
+        'examples/vue/**/*.js',
+        'examples/vue3/**/*.js',
+      ],
+      rules: {
+        'no-unused-vars': [
+          'error',
+          {
+            'varsIgnorePattern': 'React',
+          },
+        ],
+      },
+      parserOptions: {
+        sourceType: 'module',
+      },
+    },
+    {
       files: ['./packages/@uppy/companion/**/*.js'],
       rules: {
-        'no-restricted-syntax': 'warn',
         'no-underscore-dangle': 'off',
       },
     },
     {
       files: [
         '*.test.js',
+        '*.test.ts',
         'test/endtoend/*.js',
-        'website/*.js',
         'bin/**.js',
       ],
       rules: {
@@ -166,16 +323,20 @@ module.exports = {
     {
       files: [
         'bin/**.js',
+        'bin/**.mjs',
+        'examples/**/*.cjs',
         'examples/**/*.js',
         'packages/@uppy/companion/test/**/*.js',
         'test/**/*.js',
         'test/**/*.ts',
         '*.test.js',
+        '*.test.ts',
         '*.test-d.ts',
+        '*.test-d.tsx',
         'postcss.config.js',
         '.eslintrc.js',
-        'website/*.js',
-        'website/**/*.js',
+        'private/**/*.js',
+        'private/**/*.mjs',
       ],
       rules: {
         'no-console': 'off',
@@ -192,25 +353,19 @@ module.exports = {
       ],
       rules: {
         camelcase: ['off'],
-        'quote-props': ['off'],
+        'quote-props': ['error', 'as-needed', { 'numbers': true }],
       },
     },
 
     {
-      files: [
-        'website/themes/uppy/source/js/*.js',
-      ],
-      rules: {
-        'prefer-const': ['off'],
-      },
-    },
-
-    {
-      files: ['test/endtoend/*/*.js'],
+      files: ['test/endtoend/*/*.mjs', 'test/endtoend/*/*.ts'],
       rules: {
         // we mostly import @uppy stuff in these files.
         'import/no-extraneous-dependencies': ['off'],
       },
+    },
+    {
+      files: ['test/endtoend/*/*.js'],
       env: {
         mocha: true,
       },
@@ -262,20 +417,49 @@ module.exports = {
       },
     },
     {
-      files: ['**/*.ts', '**/*.md/*.ts', '**/*.md/*.typescript'],
+      files: ['**/*.ts', '**/*.md/*.ts', '**/*.md/*.typescript', '**/*.tsx', '**/*.md/*.tsx'],
       excludedFiles: ['examples/angular-example/**/*.ts', 'packages/@uppy/angular/**/*.ts'],
       parser: '@typescript-eslint/parser',
-      plugins: [
-        '@typescript-eslint',
-      ],
+      settings: {
+        'import/resolver': {
+          node: {
+            extensions: ['.js', '.jsx', '.ts', '.tsx'],
+          },
+        },
+      },
+      plugins: ['@typescript-eslint'],
       extends: [
         'eslint:recommended',
         'plugin:@typescript-eslint/eslint-recommended',
         'plugin:@typescript-eslint/recommended',
       ],
       rules: {
+        'no-extra-semi': 'off',
+        'no-restricted-syntax': ['error', {
+          selector: 'ImportDeclaration[source.value=/^@uppy\\x2F[a-z-0-9]+\\x2F/]:not([source.value=/^@uppy\\x2Futils\\x2F/]):not([source.value=/\\.(js|css)$/])',
+          message: 'Use ".js" file extension for import type declarations from a different package',
+        }, {
+          selector: 'ImportDeclaration[source.value=/^@uppy\\x2Futils\\x2Flib\\x2F.+\\.[mc]?[jt]sx?$/]',
+          message: 'Do not use file extension when importing from @uppy/utils',
+        },
+        {
+          selector: 'ImportDeclaration[source.value=/^@uppy\\x2F[a-z-0-9]+\\x2Fsrc\\x2F/]',
+          message: 'Importing from "src/" is not allowed. Import from root or from "lib/" if you must.',
+        }],
+        'import/extensions': ['error', 'ignorePackages'],
         'import/prefer-default-export': 'off',
+        '@typescript-eslint/no-empty-function': 'off',
         '@typescript-eslint/no-explicit-any': 'off',
+        '@typescript-eslint/no-extra-semi': 'off',
+        '@typescript-eslint/no-namespace': 'off',
+        '@typescript-eslint/no-non-null-assertion': 'off',
+      },
+    },
+    {
+      files: ['packages/@uppy/*/src/**/*.ts'],
+      excludedFiles: ['packages/@uppy/**/*.test.ts', 'packages/@uppy/core/src/mocks/*.ts'],
+      rules: {
+        '@typescript-eslint/explicit-module-boundary-types': 'error',
       },
     },
     {
@@ -289,9 +473,48 @@ module.exports = {
       },
     },
     {
-      files: ['**/react/*.md/*.js', '**/react.md/*.js', '**/react-*.md/*.js'],
+      files: ['**/react/*.md/*.js', '**/react.md/*.js', '**/react-*.md/*.js', '**/react/**/*.test-d.tsx'],
       settings: {
         react: { pragma: 'React' },
+      },
+    },
+    {
+      files: ['**/react/**/*.test-d.tsx'],
+      rules: {
+        'import/extensions': 'off',
+        'import/no-useless-path-segments': 'off',
+        'no-alert': 'off',
+        'no-inner-declarations': 'off',
+        'no-lone-blocks': 'off',
+        'no-unused-expressions': 'off',
+        'no-unused-vars': 'off',
+      },
+    },
+    {
+      files: [
+        'packages/@uppy/svelte/**',
+      ],
+      parserOptions: {
+        sourceType: 'module',
+      },
+    },
+    {
+      files: ['e2e/**/*.ts'],
+      extends: ['plugin:cypress/recommended'],
+    },
+    {
+      files: ['e2e/**/*.ts', 'e2e/**/*.js', 'e2e/**/*.jsx', 'e2e/**/*.mjs'],
+      rules: {
+        'import/no-extraneous-dependencies': 'off',
+        'no-console': 'off',
+        'no-only-tests/no-only-tests': 'error',
+        'no-unused-expressions': 'off',
+      },
+    },
+    {
+      files: ["packages/@uppy/vue/**"],
+      rules: {
+        'react-hooks/rules-of-hooks': 'off',
       },
     },
   ],

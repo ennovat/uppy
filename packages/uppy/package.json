@@ -1,13 +1,13 @@
 {
   "name": "uppy",
   "description": "Extensible JavaScript file upload widget with support for drag&drop, resumable uploads, previews, restrictions, file processing/encoding, remote providers like Instagram, Dropbox, Google Drive, S3 and more :dog:",
-  "version": "2.2.3",
+  "version": "4.13.1",
   "license": "MIT",
-  "main": "index.js",
-  "module": "index.mjs",
+  "main": "lib/index.js",
+  "module": "lib/index.js",
+  "type": "module",
   "unpkg": "dist/uppy.min.js",
-  "style": "dist/style.min.css",
-  "types": "types/index.d.ts",
+  "style": "dist/uppy.min.css",
   "keywords": [
     "file uploader",
     "drag-drop",
@@ -33,9 +33,9 @@
   "dependencies": {
     "@uppy/audio": "workspace:^",
     "@uppy/aws-s3": "workspace:^",
-    "@uppy/aws-s3-multipart": "workspace:^",
     "@uppy/box": "workspace:^",
     "@uppy/companion-client": "workspace:^",
+    "@uppy/compressor": "workspace:^",
     "@uppy/core": "workspace:^",
     "@uppy/dashboard": "workspace:^",
     "@uppy/drag-drop": "workspace:^",
@@ -46,6 +46,9 @@
     "@uppy/form": "workspace:^",
     "@uppy/golden-retriever": "workspace:^",
     "@uppy/google-drive": "workspace:^",
+    "@uppy/google-drive-picker": "workspace:^",
+    "@uppy/google-photos": "workspace:^",
+    "@uppy/google-photos-picker": "workspace:^",
     "@uppy/image-editor": "workspace:^",
     "@uppy/informer": "workspace:^",
     "@uppy/instagram": "workspace:^",
@@ -53,6 +56,7 @@
     "@uppy/progress-bar": "workspace:^",
     "@uppy/provider-views": "workspace:^",
     "@uppy/redux-dev-tools": "workspace:^",
+    "@uppy/remote-sources": "workspace:^",
     "@uppy/screen-capture": "workspace:^",
     "@uppy/status-bar": "workspace:^",
     "@uppy/store-default": "workspace:^",
@@ -63,14 +67,8 @@
     "@uppy/unsplash": "workspace:^",
     "@uppy/url": "workspace:^",
     "@uppy/webcam": "workspace:^",
-    "@uppy/xhr-upload": "workspace:^"
-  },
-  "devDependencies": {
-    "abortcontroller-polyfill": "^1.7.3",
-    "core-js": "~3.15.2",
-    "md-gum-polyfill": "^1.0.0",
-    "regenerator-runtime": "0.13.9",
-    "resize-observer-polyfill": "^1.5.1",
-    "whatwg-fetch": "^3.6.2"
+    "@uppy/webdav": "workspace:^",
+    "@uppy/xhr-upload": "workspace:^",
+    "@uppy/zoom": "workspace:^"
   }
 }

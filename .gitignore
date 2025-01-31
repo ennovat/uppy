@@ -8,33 +8,27 @@ node_modules
 .cache
 .parcel-cache
 .eslintcache
+.vscode/settings.json
 .yarn/cache
 .yarn/install-state.gz
 yarn-error.log
-
-env.sh
+.idea
+.env
+tsconfig.tsbuildinfo
+tsconfig.build.tsbuildinfo
 
 dist/
 lib/
+# @uppy/svelte needs lib inside src
+!src/lib
 coverage/
 examples/dev/bundle.js
-examples/aws-presigned-url/vendor/*
+examples/aws-php/vendor/*
 test/endtoend/create-react-app/build/
 test/endtoend/create-react-app/coverage/
 uppy-*.tgz
 generatedLocale.d.ts
-
-website/db.json
-website/*.log
-website/node_modules/
-website/public/
-website/.deploy*/
-website/src/_drafts
-website/themes/uppy/source/uppy/
-website/themes/uppy/_config.yml
-website/src/_template/list_of_locale_packs.md
-website/src/examples/locale_list.json
-website/themes/uppy/layout/partials/generated_stargazers.ejs
+packages/@uppy/locales/src/en_US.js
 
 **/output/*
 !output/.keep

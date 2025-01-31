@@ -1,12 +1,9 @@
 /* globals clients */
-/* eslint-disable no-restricted-globals */
 
 const fileCache = Object.create(null)
 
 function getCache (name) {
-  if (!fileCache[name]) {
-    fileCache[name] = Object.create(null)
-  }
+  fileCache[name] ??= Object.create(null)
   return fileCache[name]
 }
 

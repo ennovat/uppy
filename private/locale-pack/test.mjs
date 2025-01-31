@@ -1,64 +1,19 @@
 /* eslint-disable no-console, prefer-arrow-callback */
 import path from 'node:path'
+import process from 'node:process'
 import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 import glob from 'glob'
 import chalk from 'chalk'
 
-import { getPaths, omit } from './helpers.mjs'
+import { getLocales, getPaths, omit } from './helpers.mjs'
 
 const root = fileURLToPath(new URL('../../', import.meta.url))
 const leadingLocaleName = 'en_US'
 const mode = process.argv[2]
 const pluginLocaleDependencies = {
-  core: 'provider-views',
-}
-
-test()
-  .then(() => {
-    console.log('\n')
-    console.log('No blocking issues found')
-  })
-  .catch((error) => {
-    console.error(error)
-    process.exit(1)
-  })
-
-function test () {
-  switch (mode) {
-    case 'unused':
-      return getPaths(`${root}/packages/@uppy/**/src/locale.js`)
-        .then((paths) => paths.map((filePath) => path.basename(path.join(filePath, '..', '..'))))
-        .then(getAllFilesPerPlugin)
-        .then(unused)
-
-    case 'warnings':
-      return getPaths(`${root}/packages/@uppy/locales/src/*.js`)
-        .then(importFiles)
-        .then((locales) => ({
-          leadingLocale: locales[leadingLocaleName],
-          followerLocales: omit(locales, leadingLocaleName),
-        }))
-        .then(warnings)
-
-    default:
-      return Promise.reject(new Error(`Invalid mode "${mode}"`))
-  }
-}
-
-async function importFiles (paths) {
-  const locales = {}
-
-  for (const filePath of paths) {
-    const localeName = path.basename(filePath, '.js')
-    // Note: `.default` should be removed when we move to ESM
-    const locale = (await import(filePath)).default
-
-    locales[localeName] = locale.strings
-  }
-
-  return locales
+  core: ['provider-views', 'companion-client'],
 }
 
 function getAllFilesPerPlugin (pluginNames) {
@@ -75,9 +30,9 @@ function getAllFilesPerPlugin (pluginNames) {
     filesPerPlugin[name] = getFiles(name)
 
     if (name in pluginLocaleDependencies) {
-      filesPerPlugin[name] = filesPerPlugin[name].concat(
-        getFiles(pluginLocaleDependencies[name])
-      )
+      for (const subDeb of pluginLocaleDependencies[name]) {
+        filesPerPlugin[name].push(...getFiles(subDeb))
+      }
     }
   }
 
@@ -93,14 +48,14 @@ async function unused (filesPerPlugin, data) {
       '@uppy',
       name,
       'src',
-      'locale.js'
+      'locale.js',
     )
     const locale = (await import(localePath)).default
 
     for (const key of Object.keys(locale.strings)) {
       const regPat = new RegExp(
         `(i18n|i18nArray)\\([^\\)]*['\`"]${key}['\`"]`,
-        'g'
+        'g',
       )
       if (!fileString.match(regPat)) {
         return Promise.reject(new Error(`Unused locale key "${key}" in @uppy/${name}`))
@@ -136,7 +91,7 @@ function warnings ({ leadingLocale, followerLocales }) {
           `${chalk.cyan(name)} locale has missing string: '${chalk.red(key)}'`,
           `that is present in ${chalk.cyan(leadingLocaleName)}`,
           `with value: ${chalk.yellow(value)}`,
-        ].join(' ')
+        ].join(' '),
       )
     }
 
@@ -150,10 +105,32 @@ function warnings ({ leadingLocale, followerLocales }) {
           `${chalk.cyan(name)} locale has excess string:`,
           `'${chalk.yellow(key)}' that is not present`,
           `in ${chalk.cyan(leadingLocaleName)}.`,
-        ].join(' ')
+        ].join(' '),
       )
     }
   }
 
   console.log(logs.join('\n'))
 }
+
+function test () {
+  switch (mode) {
+    case 'unused':
+      return getPaths(`${root}/packages/@uppy/**/src/locale.js`)
+        .then((paths) => unused(getAllFilesPerPlugin(paths.map((filePath) => path.basename(path.join(filePath, '..', '..'))))))
+
+    case 'warnings':
+      return getLocales(`${root}/packages/@uppy/locales/src/*.js`)
+        .then((locales) => warnings({
+          leadingLocale: locales[leadingLocaleName],
+          followerLocales: omit(locales, leadingLocaleName),
+        }))
+
+    default:
+      return Promise.reject(new Error(`Invalid mode "${mode}"`))
+  }
+}
+
+await test()
+console.log('\n')
+console.log('No blocking issues found')

@@ -22,16 +22,11 @@ coverage
 # Compiled binary addons (http://nodejs.org/api/addons.html)
 build/Release
 
-# Dependency directory
-# https://www.npmjs.org/doc/misc/npm-faq.html#should-i-check-my-node_modules-folder-into-git
-node_modules
-
 # oAuth Configuration
 config/auth.js
 
 *.pem
 env.*
-!env.test.sh
 
 output/*
 test/output/*
@@ -39,6 +34,6 @@ test/output/*
 .DS_Store
 
 # Transpiled
-lib/
+./lib/
 infra/kube/companion/uppy-env.yaml
 scripts/.tl-deploy-hosts-danger.txt
